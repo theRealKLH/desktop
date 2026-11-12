@@ -1,13 +1,15 @@
 import * as React from 'react'
 import { clamp } from '../lib/clamp'
 import { PullRequest } from '../models/pull-request'
+import { Repository } from '../models/repository'
 import { PullRequestBadge } from './branches'
 import { Dispatcher } from './dispatcher'
 import { Button } from './lib/button'
 import { SandboxedMarkdown } from './lib/sandboxed-markdown'
 import { Octicon } from './octicons'
-import * as OcticonSymbol from './octicons/octicons.generated'
+import * as octicons from './octicons/octicons.generated'
 import classNames from 'classnames'
+import { Emoji } from '../lib/emoji'
 
 /**
  * The max height of the visible quick view card is 556 (500 for scrollable
@@ -23,6 +25,7 @@ const heightPRListItem = 47
 interface IPullRequestQuickViewProps {
   readonly dispatcher: Dispatcher
   readonly pullRequest: PullRequest
+  readonly localRepository: Repository
 
   readonly pullRequestItemTop: number
 
@@ -33,11 +36,14 @@ interface IPullRequestQuickViewProps {
   readonly onMouseLeave: () => void
 
   /** Map from the emoji shortcut (e.g., :+1:) to the image's local path. */
-  readonly emoji: Map<string, string>
+  readonly emoji: Map<string, Emoji>
+
+  readonly underlineLinks: boolean
 }
 
 interface IPullRequestQuickViewState {
   readonly top: number
+  readonly visibility: 'visible' | 'hidden'
 }
 
 export class PullRequestQuickView extends React.Component<
@@ -58,6 +64,7 @@ export class PullRequestQuickView extends React.Component<
         props.pullRequestItemTop,
         this.quickViewHeight
       ),
+      visibility: 'hidden',
     }
   }
 
@@ -83,6 +90,7 @@ export class PullRequestQuickView extends React.Component<
 
   private onMarkdownParsed = () => {
     this.updateQuickViewPosition()
+    this.setState({ visibility: 'visible' })
   }
 
   private onViewOnGitHub = () => {
@@ -158,11 +166,15 @@ export class PullRequestQuickView extends React.Component<
   private renderHeader = (): JSX.Element => {
     return (
       <header className="header">
-        <Octicon symbol={OcticonSymbol.listUnordered} />
+        <Octicon symbol={octicons.listUnordered} />
         <div className="action-needed">Review requested</div>
-        <Button className="button-with-icon" onClick={this.onViewOnGitHub}>
+        <Button
+          className="button-with-icon"
+          onClick={this.onViewOnGitHub}
+          role="link"
+        >
           View on GitHub
-          <Octicon symbol={OcticonSymbol.linkExternal} />
+          <Octicon symbol={octicons.linkExternal} />
         </Button>
       </header>
     )
@@ -174,9 +186,7 @@ export class PullRequestQuickView extends React.Component<
         <Octicon
           className="icon"
           symbol={
-            isDraft
-              ? OcticonSymbol.gitPullRequestDraft
-              : OcticonSymbol.gitPullRequest
+            isDraft ? octicons.gitPullRequestDraft : octicons.gitPullRequest
           }
         />
         <span className="state">{isDraft ? 'Draft' : 'Open'}</span>
@@ -201,6 +211,7 @@ export class PullRequestQuickView extends React.Component<
             number={pullRequestNumber}
             dispatcher={this.props.dispatcher}
             repository={base.gitHubRepository}
+            localRepository={this.props.localRepository}
           />
         </div>
         <SandboxedMarkdown
@@ -211,19 +222,21 @@ export class PullRequestQuickView extends React.Component<
           markdownContext={'PullRequest'}
           onMarkdownLinkClicked={this.onMarkdownLinkClicked}
           onMarkdownParsed={this.onMarkdownParsed}
+          underlineLinks={this.props.underlineLinks}
+          title="Pull request markdown body"
         />
       </div>
     )
   }
 
   public render() {
-    const { top } = this.state
+    const { top, visibility } = this.state
     return (
       <div
         className="pull-request-quick-view"
         onMouseEnter={this.props.onMouseEnter}
         onMouseLeave={this.onMouseLeave}
-        style={{ top }}
+        style={{ top, visibility }}
         ref={this.quickViewRef}
       >
         <div className="pull-request-quick-view-contents">

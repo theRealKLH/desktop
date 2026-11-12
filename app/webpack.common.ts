@@ -2,15 +2,11 @@ import * as path from 'path'
 import HtmlWebpackPlugin from 'html-webpack-plugin'
 import webpack from 'webpack'
 import merge from 'webpack-merge'
-import { getChannel } from '../script/dist-info'
 import { getReplacements } from './app-info'
-
-const channel = getChannel()
+import { getDistArchitecture } from '../script/dist-info'
+import { getKoffiWebpackConfig } from '../script/webpack-koffi'
 
 export const externals = ['7zip']
-if (channel === 'development') {
-  externals.push('devtron')
-}
 
 const outputDir = 'out'
 export const replacements = getReplacements()
@@ -70,33 +66,58 @@ export const main = merge({}, commonConfig, {
   ],
 })
 
-export const renderer = merge({}, commonConfig, {
-  entry: { renderer: path.resolve(__dirname, 'src/ui/index') },
-  target: 'electron-renderer',
-  module: {
-    rules: [
-      {
-        test: /\.(jpe?g|png|gif|ico)$/,
-        use: ['file?name=[path][name].[ext]'],
-      },
-      {
-        test: /\.cmd$/,
-        loader: 'file-loader',
-      },
+export const renderer = merge(
+  {},
+  commonConfig,
+  getKoffiWebpackConfig(
+    path.resolve(__dirname, 'node_modules'),
+    process.platform,
+    getDistArchitecture()
+  ),
+  {
+    entry: { renderer: path.resolve(__dirname, 'src/ui/index') },
+    target: 'electron-renderer',
+    module: {
+      rules: [
+        {
+          test: /\.(jpe?g|png|gif|ico)$/,
+          use: ['file?name=[path][name].[ext]'],
+        },
+        {
+          test: /\.cmd$/,
+          type: 'asset/resource',
+        },
+      ],
+    },
+    plugins: [
+      new HtmlWebpackPlugin({
+        template: path.join(__dirname, 'static', 'index.html'),
+        chunks: ['renderer'],
+      }),
+      new webpack.NormalModuleReplacementPlugin(
+        /^vscode-jsonrpc$/,
+        resource => {
+          resource.request = 'vscode-jsonrpc/lib/node/main.js'
+        }
+      ),
+      new webpack.NormalModuleReplacementPlugin(
+        /vscode-jsonrpc[\\/]node(\.js)?$/,
+        resource => {
+          resource.request = 'vscode-jsonrpc/lib/node/main.js'
+        }
+      ),
+      new webpack.DefinePlugin(
+        Object.assign({}, replacements, {
+          __PROCESS_KIND__: JSON.stringify('ui'),
+        })
+      ),
     ],
-  },
-  plugins: [
-    new HtmlWebpackPlugin({
-      template: path.join(__dirname, 'static', 'index.html'),
-      chunks: ['renderer'],
-    }),
-    new webpack.DefinePlugin(
-      Object.assign({}, replacements, {
-        __PROCESS_KIND__: JSON.stringify('ui'),
-      })
-    ),
-  ],
-})
+    resolve: {
+      // Prevent the renderer from using browser-specific versions of modules
+      aliasFields: [],
+    },
+  }
+)
 
 export const crash = merge({}, commonConfig, {
   entry: { crash: path.resolve(__dirname, 'src/crash/index') },

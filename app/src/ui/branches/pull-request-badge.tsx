@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { CIStatus } from './ci-status'
 import { GitHubRepository } from '../../models/github-repository'
+import { Repository } from '../../models/repository'
 import { Dispatcher } from '../dispatcher'
 import { ICombinedRefCheck } from '../../lib/ci-checks/ci-checks'
-import { enableCICheckRuns } from '../../lib/feature-flag'
 import { getPullRequestCommitRef } from '../../models/pull-request'
+import { Button } from '../lib/button'
 
 interface IPullRequestBadgeProps {
   /** The pull request's number. */
@@ -14,6 +15,12 @@ interface IPullRequestBadgeProps {
 
   /** The GitHub repository to use when looking up commit status. */
   readonly repository: GitHubRepository
+  readonly localRepository: Repository
+
+  /** Whether or not the check runs popover is open */
+  readonly showCIStatusPopover?: boolean
+
+  readonly onBadgeRef?: (ref: HTMLButtonElement | null) => void
 
   /** The GitHub repository to use when looking up commit status. */
   readonly onBadgeClick?: () => void
@@ -33,7 +40,7 @@ export class PullRequestBadge extends React.Component<
   IPullRequestBadgeProps,
   IPullRequestBadgeState
 > {
-  private badgeRef: HTMLDivElement | null = null
+  private badgeRef: HTMLButtonElement | null = null
   private badgeBoundingBottom: number = 0
 
   public constructor(props: IPullRequestBadgeProps) {
@@ -56,14 +63,13 @@ export class PullRequestBadge extends React.Component<
     }
   }
 
-  private onRef = (badgeRef: HTMLDivElement) => {
+  private onRef = (badgeRef: HTMLButtonElement | null) => {
     this.badgeRef = badgeRef
+    this.props.onBadgeRef?.(badgeRef)
   }
 
-  private onBadgeClick = (
-    event: React.MouseEvent<HTMLDivElement, MouseEvent>
-  ) => {
-    if (!this.state.isStatusShowing || !enableCICheckRuns()) {
+  private onBadgeClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (!this.state.isStatusShowing) {
       return
     }
 
@@ -78,15 +84,23 @@ export class PullRequestBadge extends React.Component<
   public render() {
     const ref = getPullRequestCommitRef(this.props.number)
     return (
-      <div className="pr-badge" onClick={this.onBadgeClick} ref={this.onRef}>
+      <Button
+        className="pr-badge"
+        onClick={this.onBadgeClick}
+        onButtonRef={this.onRef}
+        disabled={!this.state.isStatusShowing}
+        ariaHaspopup={true}
+        ariaExpanded={this.props.showCIStatusPopover === true}
+      >
         <span className="number">#{this.props.number}</span>
         <CIStatus
           commitRef={ref}
           dispatcher={this.props.dispatcher}
           repository={this.props.repository}
+          localRepository={this.props.localRepository}
           onCheckChange={this.onCheckChange}
         />
-      </div>
+      </Button>
     )
   }
 }

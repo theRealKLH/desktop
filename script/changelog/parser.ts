@@ -2,7 +2,7 @@ import * as Path from 'path'
 import * as Fs from 'fs'
 import { gt as greaterThan } from 'semver'
 
-import { fetchPR, IAPIPR } from './api'
+import { fetchPR, IAPIPR } from '../pr-api'
 
 const PlaceholderChangeType = '???'
 const OfficialOwner = 'desktop'
@@ -48,12 +48,21 @@ function capitalized(str: string): string {
  */
 export function findReleaseNote(body: string): string | null | undefined {
   const re = /^Notes: (.+)$/gm
-  const matches = re.exec(body)
-  if (!matches || matches.length < 2) {
+  let lastMatches = null
+
+  // There might be multiple lines starting with "Notes: ", but we're only
+  // interested in the last one.
+  let matches = re.exec(body)
+  while (matches) {
+    lastMatches = matches
+    matches = re.exec(body)
+  }
+
+  if (!lastMatches || lastMatches.length < 2) {
     return undefined
   }
 
-  const note = matches[1].replace(/\.$/, '')
+  const note = lastMatches[1].replace(/\.$/, '')
   return note === 'no-notes' ? null : note
 }
 
@@ -110,7 +119,7 @@ export async function convertToChangelogFormat(
   for (const line of lines) {
     try {
       const commit = parseCommitTitle(line)
-      const pr = await fetchPR(commit.prID)
+      const pr = fetchPR(commit.prID)
       if (!pr) {
         throw new Error(`Unable to get PR from API: ${commit.prID}`)
       }

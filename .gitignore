@@ -3,8 +3,10 @@ dist/
 node_modules/
 coverage/
 npm-debug.log
-yarn-error.log
 app/node_modules/
+vendor/windows-argv-parser/build/
+vendor/desktop-notifications/build/
+vendor/desktop-trampoline/build/
 .DS_Store
 .awcache
 .idea/
@@ -16,3 +18,4 @@ app/node_modules/
 junit*.xml
 *.swp
 tslint-rules/
+playwright-videos/

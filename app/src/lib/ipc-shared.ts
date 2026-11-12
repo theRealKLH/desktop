@@ -13,9 +13,10 @@ import { Architecture } from './get-architecture'
 import { EndpointToken } from './endpoint-token'
 import { PathType } from '../ui/lib/app-proxy'
 import { ThemeSource } from '../ui/lib/theme-source'
-import { DesktopNotificationPermission } from 'desktop-notifications/dist/notification-permission'
-import { NotificationCallback } from 'desktop-notifications/dist/notification-callback'
+import { DesktopNotificationPermission } from 'desktop-notifications'
+import { NotificationCallback } from 'desktop-notifications'
 import { DesktopAliveEvent } from './stores/alive-store'
+import { CLIAction } from './cli-action'
 
 /**
  * Defines the simplex IPC channel names we use from the renderer
@@ -25,6 +26,7 @@ import { DesktopAliveEvent } from './stores/alive-store'
  */
 export type RequestChannels = {
   'select-all-window-contents': () => void
+  'dialog-did-open': () => void
   'update-menu-state': (
     state: Array<{ id: MenuIDs; state: IMenuItemState }>
   ) => void
@@ -46,6 +48,8 @@ export type RequestChannels = {
   'menu-event': (name: MenuEvent) => void
   log: (level: LogLevel, message: string) => void
   'will-quit': () => void
+  'will-quit-even-if-updating': () => void
+  'cancel-quitting': () => void
   'crash-ready': () => void
   'crash-quit': () => void
   'window-state-changed': (windowState: WindowState) => void
@@ -54,6 +58,7 @@ export type RequestChannels = {
   'app-menu': (menu: IMenu) => void
   'launch-timing-stats': (stats: ILaunchStats) => void
   'url-action': (action: URLActionType) => void
+  'cli-action': (action: CLIAction) => void
   'certificate-error': (
     certificate: Electron.Certificate,
     error: string,
@@ -62,7 +67,14 @@ export type RequestChannels = {
   focus: () => void
   blur: () => void
   'update-accounts': (accounts: ReadonlyArray<EndpointToken>) => void
+  'resolve-image-token': (
+    requestId: number,
+    endpoint: string,
+    token: string
+  ) => void
+  'resolved-image-token': (requestId: number, token: string | null) => void
   'quit-and-install-updates': () => void
+  'quit-app': () => void
   'minimize-window': () => void
   'maximize-window': () => void
   'unmaximize-window': () => void
@@ -74,9 +86,13 @@ export type RequestChannels = {
   'auto-updater-update-downloaded': () => void
   'native-theme-updated': () => void
   'set-native-theme-source': (themeName: ThemeSource) => void
+  'update-window-background-color': (color: string) => void
   'focus-window': () => void
   'notification-event': NotificationCallback<DesktopAliveEvent>
   'set-window-zoom-factor': (zoomFactor: number) => void
+  'show-installing-update': () => void
+  'install-windows-cli': () => void
+  'uninstall-windows-cli': () => void
 }
 
 /**
@@ -91,9 +107,12 @@ export type RequestResponseChannels = {
   'get-path': (path: PathType) => Promise<string>
   'get-app-architecture': () => Promise<Architecture>
   'get-app-path': () => Promise<string>
+  'get-exec-path': () => Promise<string>
   'is-running-under-arm64-translation': () => Promise<boolean>
   'move-to-trash': (path: string) => Promise<void>
   'show-item-in-folder': (path: string) => Promise<void>
+  'write-clipboard-text': (text: string) => Promise<void>
+  'confirm-reveal-directory': () => Promise<boolean>
   'show-contextual-menu': (
     items: ReadonlyArray<ISerializableMenuItem>,
     addSpellCheckMenu: boolean

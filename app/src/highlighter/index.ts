@@ -75,6 +75,7 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     mappings: {
       '.html': 'text/html',
       '.htm': 'text/html',
+      '.astro': 'text/html',
     },
   },
   {
@@ -97,6 +98,7 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/vue/vue'),
     mappings: {
       '.vue': 'text/x-vue',
+      '.svelte': 'text/x-vue',
     },
   },
   {
@@ -104,6 +106,7 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     mappings: {
       '.markdown': 'text/x-markdown',
       '.md': 'text/x-markdown',
+      '.mdx': 'text/x-markdown',
     },
   },
   {
@@ -118,6 +121,7 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     mappings: {
       '.xml': 'text/xml',
       '.xaml': 'text/xml',
+      '.xsd': 'text/xml',
       '.csproj': 'text/xml',
       '.fsproj': 'text/xml',
       '.vcxproj': 'text/xml',
@@ -148,6 +152,11 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
       '.h': 'text/x-c',
       '.cpp': 'text/x-c++src',
       '.hpp': 'text/x-c++src',
+      '.cc': 'text/x-c++src',
+      '.hh': 'text/x-c++src',
+      '.hxx': 'text/x-c++src',
+      '.cxx': 'text/x-c++src',
+      '.ino': 'text/x-c++src',
       '.kt': 'text/x-kotlin',
     },
   },
@@ -206,6 +215,8 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/python/python'),
     mappings: {
       '.py': 'text/x-python',
+      '.pyi': 'text/x-python',
+      '.vpy': 'text/x-python',
     },
   },
   {
@@ -268,9 +279,10 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
     },
   },
   {
-    install: () => import('codemirror/mode/lua/lua'),
+    install: () => import('codemirror-mode-luau'),
     mappings: {
       '.lua': 'text/x-lua',
+      '.luau': 'text/x-luau',
     },
   },
   {
@@ -423,6 +435,18 @@ const extensionModes: ReadonlyArray<IModeDefinition> = [
       '.dart': 'application/dart',
     },
   },
+  {
+    install: () => import('codemirror-mode-zig'),
+    mappings: {
+      '.zig': 'text/x-zig',
+    },
+  },
+  {
+    install: () => import('codemirror/mode/cmake/cmake'),
+    mappings: {
+      '.cmake': 'text/x-cmake',
+    },
+  },
 ]
 
 /**
@@ -441,6 +465,12 @@ const basenameModes: ReadonlyArray<IModeDefinition> = [
     install: () => import('codemirror/mode/dockerfile/dockerfile'),
     mappings: {
       dockerfile: 'text/x-dockerfile',
+    },
+  },
+  {
+    install: () => import('codemirror/mode/toml/toml'),
+    mappings: {
+      'cargo.lock': 'text/x-toml',
     },
   },
 ]
@@ -586,8 +616,8 @@ function readToken(
   throw new Error(`Mode ${getModeName(mode)} failed to advance stream.`)
 }
 
-onmessage = async (ev: MessageEvent) => {
-  const request = ev.data as IHighlightRequest
+onmessage = async (ev: MessageEvent<IHighlightRequest>) => {
+  const request = ev.data
 
   const tabSize = request.tabSize || 4
   const addModeClass = request.addModeClass === true

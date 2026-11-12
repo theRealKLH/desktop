@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { Account } from '../../models/account'
-import { FilterList, IFilterListGroup } from '../lib/filter-list'
-import { IAPIRepository, getDotComAPIEndpoint, getHTMLURL } from '../../lib/api'
+import { IFilterListGroup } from '../lib/filter-list'
+import { IAPIRepository } from '../../lib/api'
 import {
   ICloneableRepositoryListItem,
   groupRepositories,
@@ -15,6 +15,8 @@ import { HighlightText } from '../lib/highlight-text'
 import { ClickSource } from '../lib/list'
 import { LinkButton } from '../lib/link-button'
 import { Ref } from '../lib/ref'
+import { SectionFilterList } from '../lib/section-filter-list'
+import { TooltippedContent } from '../lib/tooltipped-content'
 
 interface ICloneableRepositoryFilterListProps {
   /** The account to clone from. */
@@ -74,6 +76,8 @@ interface ICloneableRepositoryFilterListProps {
     repository: IAPIRepository,
     source: ClickSource
   ) => void
+
+  readonly renderPreFilter?: () => JSX.Element | null
 }
 
 const RowHeight = 31
@@ -153,6 +157,15 @@ export class CloneableRepositoryFilterList extends React.PureComponent<ICloneabl
     this.props.onRefreshRepositories(this.props.account)
   }
 
+  private getGroupAriaLabelGetter =
+    (groups: ReadonlyArray<IFilterListGroup<ICloneableRepositoryListItem>>) =>
+    (group: number) => {
+      const groupIdentifier = groups[group].identifier
+      return groupIdentifier === YourRepositoriesIdentifier
+        ? this.getYourRepositoriesLabel()
+        : groupIdentifier
+    }
+
   public render() {
     const { repositories, account, selectedItem } = this.props
 
@@ -160,8 +173,8 @@ export class CloneableRepositoryFilterList extends React.PureComponent<ICloneabl
     const selectedListItem = this.getSelectedListItem(groups, selectedItem)
 
     return (
-      <FilterList<ICloneableRepositoryListItem>
-        className="clone-github-repo"
+      <SectionFilterList<ICloneableRepositoryListItem>
+        className={'clone-github-repo'}
         rowHeight={RowHeight}
         selectedItem={selectedListItem}
         renderItem={this.renderItem}
@@ -173,8 +186,10 @@ export class CloneableRepositoryFilterList extends React.PureComponent<ICloneabl
         onFilterTextChanged={this.props.onFilterTextChanged}
         renderNoItems={this.renderNoItems}
         renderPostFilter={this.renderPostFilter}
+        renderPreFilter={this.props.renderPreFilter}
         onItemClick={this.props.onItemClicked ? this.onItemClick : undefined}
-        placeholderText="Filter your repositories"
+        placeholderText={'Filter your repositories'}
+        getGroupAriaLabel={this.getGroupAriaLabelGetter(groups)}
       />
     )
   }
@@ -206,10 +221,14 @@ export class CloneableRepositoryFilterList extends React.PureComponent<ICloneabl
     }
   }
 
+  private getYourRepositoriesLabel = () => {
+    return __DARWIN__ ? 'Your Repositories' : 'Your repositories'
+  }
+
   private renderGroupHeader = (identifier: string) => {
     let header = identifier
     if (identifier === YourRepositoriesIdentifier) {
-      header = __DARWIN__ ? 'Your Repositories' : 'Your repositories'
+      header = this.getYourRepositoriesLabel()
     }
     return (
       <div className="clone-repository-list-content clone-repository-list-group-header">
@@ -225,19 +244,28 @@ export class CloneableRepositoryFilterList extends React.PureComponent<ICloneabl
     return (
       <div className="clone-repository-list-item">
         <Octicon className="icon" symbol={item.icon} />
-        <div className="name" title={item.text[0]}>
+        <TooltippedContent
+          className="name"
+          tooltip={item.text[0]}
+          onlyWhenOverflowed={true}
+          tagName="div"
+        >
           <HighlightText text={item.text[0]} highlight={matches.title} />
-        </div>
+        </TooltippedContent>
+        {item.archived && <div className="archived">Archived</div>}
       </div>
     )
   }
 
   private renderPostFilter = () => {
+    const tooltip = 'Refresh the list of repositories'
+
     return (
       <Button
         disabled={this.props.loading}
         onClick={this.refreshRepositories}
-        tooltip="Refresh the list of repositories"
+        ariaLabel={tooltip}
+        tooltip={tooltip}
       >
         <Octicon
           symbol={syncClockwise}
@@ -248,15 +276,11 @@ export class CloneableRepositoryFilterList extends React.PureComponent<ICloneabl
   }
 
   private renderNoItems = () => {
-    const { loading, repositories } = this.props
-    const endpointName =
-      this.props.account.endpoint === getDotComAPIEndpoint()
-        ? 'GitHub.com'
-        : getHTMLURL(this.props.account.endpoint)
+    const { loading, repositories, account } = this.props
 
     if (loading && (repositories === null || repositories.length === 0)) {
       return (
-        <div className="no-items loading">{`Loading repositories from ${endpointName}…`}</div>
+        <div className="no-items loading">{`Loading repositories from ${account.friendlyEndpoint}…`}</div>
       )
     }
 
@@ -275,7 +299,7 @@ export class CloneableRepositoryFilterList extends React.PureComponent<ICloneabl
       <div className="no-items empty-repository-list">
         <div>
           Looks like there are no repositories for{' '}
-          <Ref>{this.props.account.login}</Ref> on {endpointName}.{' '}
+          <Ref>{this.props.account.login}</Ref> on {account.friendlyEndpoint}.{' '}
           <LinkButton onClick={this.refreshRepositories}>
             Refresh this list
           </LinkButton>{' '}

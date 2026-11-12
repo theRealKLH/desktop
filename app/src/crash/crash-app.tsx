@@ -4,7 +4,7 @@ import { TitleBar } from '../ui/window/title-bar'
 import { encodePathAsUrl } from '../lib/path'
 import { WindowState } from '../lib/window-state'
 import { Octicon } from '../ui/octicons'
-import * as OcticonSymbol from '../ui/octicons/octicons.generated'
+import * as octicons from '../ui/octicons/octicons.generated'
 import { Button } from '../ui/lib/button'
 import { LinkButton } from '../ui/lib/link-button'
 import { getVersion } from '../ui/lib/app-proxy'
@@ -12,9 +12,7 @@ import { getOS } from '../lib/get-os'
 import * as ipcRenderer from '../lib/ipc-renderer'
 import { getCurrentWindowState } from '../ui/main-process-proxy'
 
-// This is a weird one, let's leave it as a placeholder
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-interface ICrashAppProps {}
+type CrashAppProps = Record<string, never>
 
 interface ICrashAppState {
   /**
@@ -86,8 +84,8 @@ function prepareErrorMessage(error: Error) {
  * Exercise caution when working with the crash process. If the crash
  * process itself crashes we've failed.
  */
-export class CrashApp extends React.Component<ICrashAppProps, ICrashAppState> {
-  public constructor(props: ICrashAppProps) {
+export class CrashApp extends React.Component<CrashAppProps, ICrashAppState> {
+  public constructor(props: CrashAppProps) {
     super(props)
 
     this.state = {
@@ -141,7 +139,7 @@ export class CrashApp extends React.Component<ICrashAppProps, ICrashAppState> {
 
     return (
       <header>
-        <Octicon symbol={OcticonSymbol.stop} className="error-icon" />
+        <Octicon symbol={octicons.stop} className="error-icon" />
         <h1>{message}</h1>
       </header>
     )
@@ -201,7 +199,9 @@ export class CrashApp extends React.Component<ICrashAppProps, ICrashAppState> {
   }
 
   private renderBackgroundGraphics() {
-    return <img className="background-graphic-bottom" src={BottomImageUri} />
+    return (
+      <img className="background-graphic-bottom" alt="" src={BottomImageUri} />
+    )
   }
 
   public render() {

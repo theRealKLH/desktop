@@ -1,41 +1,23 @@
-import { git, IGitExecutionOptions, gitNetworkArguments } from './core'
+import { git, IGitStringExecutionOptions } from './core'
 import { Repository } from '../../models/repository'
-import { IGitAccount } from '../../models/git-account'
 import { IFetchProgress } from '../../models/progress'
 import { FetchProgressParser, executionOptionsWithProgress } from '../progress'
-import { enableRecurseSubmodulesFlag } from '../feature-flag'
 import { IRemote } from '../../models/remote'
 import { ITrackingBranch } from '../../models/branch'
 import { envForRemoteOperation } from './environment'
 
 async function getFetchArgs(
-  repository: Repository,
   remote: string,
-  account: IGitAccount | null,
-  progressCallback?: (progress: IFetchProgress) => void
+  progressCallback: ((progress: IFetchProgress) => void) | undefined
 ) {
-  if (enableRecurseSubmodulesFlag()) {
-    return progressCallback != null
-      ? [
-          ...gitNetworkArguments(),
-          'fetch',
-          '--progress',
-          '--prune',
-          '--recurse-submodules=on-demand',
-          remote,
-        ]
-      : [
-          ...gitNetworkArguments(),
-          'fetch',
-          '--prune',
-          '--recurse-submodules=on-demand',
-          remote,
-        ]
-  } else {
-    return progressCallback != null
-      ? [...gitNetworkArguments(), 'fetch', '--progress', '--prune', remote]
-      : [...gitNetworkArguments(), 'fetch', '--prune', remote]
-  }
+  return [
+    'fetch',
+    ...(progressCallback ? ['--progress'] : []),
+    '--prune',
+    '--recurse-submodules=on-demand',
+    '--',
+    remote,
+  ]
 }
 
 /**
@@ -52,16 +34,18 @@ async function getFetchArgs(
  *                           of the fetch operation. When provided this enables
  *                           the '--progress' command line flag for
  *                           'git fetch'.
+ * @param isBackgroundTask  - Whether the fetch is being performed as a
+ *                            background task as opposed to being user initiated
  */
 export async function fetch(
   repository: Repository,
-  account: IGitAccount | null,
   remote: IRemote,
-  progressCallback?: (progress: IFetchProgress) => void
+  progressCallback?: (progress: IFetchProgress) => void,
+  isBackgroundTask = false
 ): Promise<void> {
-  let opts: IGitExecutionOptions = {
+  let opts: IGitStringExecutionOptions = {
     successExitCodes: new Set([0]),
-    env: await envForRemoteOperation(account, remote.url),
+    env: await envForRemoteOperation(remote.url),
   }
 
   if (progressCallback) {
@@ -69,7 +53,7 @@ export async function fetch(
     const kind = 'fetch'
 
     opts = await executionOptionsWithProgress(
-      { ...opts, trackLFSProgress: true },
+      { ...opts, trackLFSProgress: true, isBackgroundTask },
       new FetchProgressParser(),
       progress => {
         // In addition to progress output from the remote end and from
@@ -100,12 +84,7 @@ export async function fetch(
     progressCallback({ kind, title, value: 0, remote: remote.name })
   }
 
-  const args = await getFetchArgs(
-    repository,
-    remote.name,
-    account,
-    progressCallback
-  )
+  const args = await getFetchArgs(remote.name, progressCallback)
 
   await git(args, repository.path, 'fetch', opts)
 }
@@ -113,21 +92,21 @@ export async function fetch(
 /** Fetch a given refspec from the given remote. */
 export async function fetchRefspec(
   repository: Repository,
-  account: IGitAccount | null,
   remote: IRemote,
   refspec: string
 ): Promise<void> {
   await git(
-    [...gitNetworkArguments(), 'fetch', remote.name, refspec],
+    ['fetch', '--', remote.name, refspec],
     repository.path,
     'fetchRefspec',
     {
       successExitCodes: new Set([0, 128]),
-      env: await envForRemoteOperation(account, remote.url),
+      env: await envForRemoteOperation(remote.url),
     }
   )
 }
 
+/** Fast-forward tracking branches. */
 export async function fastForwardBranches(
   repository: Repository,
   branches: ReadonlyArray<ITrackingBranch>
@@ -137,18 +116,6 @@ export async function fastForwardBranches(
   }
 
   const refPairs = branches.map(branch => `${branch.upstreamRef}:${branch.ref}`)
-
-  const opts: IGitExecutionOptions = {
-    // Fetch exits with an exit code of 1 if one or more refs failed to update
-    // which is what we expect will happen
-    successExitCodes: new Set([0, 1]),
-    env: {
-      // This will make sure the reflog entries are correct after
-      // fast-forwarding the branches.
-      GIT_REFLOG_ACTION: 'pull',
-    },
-    stdin: refPairs.join('\n'),
-  }
 
   await git(
     [
@@ -166,6 +133,16 @@ export async function fastForwardBranches(
     ],
     repository.path,
     'fastForwardBranches',
-    opts
+    {
+      // Fetch exits with an exit code of 1 if one or more refs failed to update
+      // which is what we expect will happen
+      successExitCodes: new Set([0, 1]),
+      env: {
+        // This will make sure the reflog entries are correct after
+        // fast-forwarding the branches.
+        GIT_REFLOG_ACTION: 'pull',
+      },
+      stdin: refPairs.join('\n'),
+    }
   )
 }

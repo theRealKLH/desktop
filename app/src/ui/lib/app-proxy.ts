@@ -8,7 +8,6 @@ export type PathType =
   | 'home'
   | 'appData'
   | 'userData'
-  | 'cache'
   | 'temp'
   | 'exe'
   | 'module'
@@ -21,6 +20,7 @@ export type PathType =
   | 'recent'
   | 'logs'
   | 'crashDumps'
+  | 'sessionData'
 
 /**
  * Get the version of the app.
@@ -60,7 +60,7 @@ export async function getDocumentsPath(): Promise<string> {
   if (!documentsPath) {
     try {
       documentsPath = await getPath('documents')
-    } catch (ex) {
+    } catch {
       // a user profile may not have the Documents folder defined on Windows
       documentsPath = await getPath('home')
     }

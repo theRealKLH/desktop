@@ -4,6 +4,7 @@ import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
 import { IRefCheck } from '../../lib/ci-checks/ci-checks'
 import { CICheckRunList } from './ci-check-run-list'
 import { GitHubRepository } from '../../models/github-repository'
+import { Repository } from '../../models/repository'
 import { Dispatcher } from '../dispatcher'
 import {
   APICheckConclusion,
@@ -11,7 +12,7 @@ import {
   IAPICheckSuite,
 } from '../../lib/api'
 import { Octicon } from '../octicons'
-import * as OcticonSymbol from './../octicons/octicons.generated'
+import * as octicons from './../octicons/octicons.generated'
 import { encodePathAsUrl } from '../../lib/path'
 import { offsetFromNow } from '../../lib/offset-from'
 
@@ -23,6 +24,7 @@ const BlankSlateImage = encodePathAsUrl(
 interface ICICheckRunRerunDialogProps {
   readonly dispatcher: Dispatcher
   readonly repository: GitHubRepository
+  readonly localRepository: Repository
 
   /** List of all the check runs (some of which are not rerunnable) */
   readonly checkRuns: ReadonlyArray<IRefCheck>
@@ -62,19 +64,25 @@ export class CICheckRunRerunDialog extends React.Component<
   }
 
   private onSubmit = async () => {
-    const { dispatcher, repository, prRef } = this.props
+    const { dispatcher, repository, localRepository, prRef } = this.props
     this.setState({ loadingRerun: true })
-    await dispatcher.rerequestCheckSuites(
+    const results = await dispatcher.rerequestCheckSuites(
       repository,
+      localRepository,
       this.state.rerunnable,
       this.props.failedOnly
     )
+    if (results.length === 0 || results.some(result => !result)) {
+      this.setState({ loadingRerun: false })
+      return
+    }
     await dispatcher.manualRefreshSubscription(
       repository,
+      localRepository,
       prRef,
       this.state.rerunnable
     )
-    dispatcher.recordRerunChecks()
+    dispatcher.incrementMetric('rerunsChecks')
     this.props.onDismissed()
   }
 
@@ -97,7 +105,11 @@ export class CICheckRunRerunDialog extends React.Component<
         continue
       }
       checkSuitesPromises.push(
-        this.props.dispatcher.fetchCheckSuite(this.props.repository, id)
+        this.props.dispatcher.fetchCheckSuite(
+          this.props.repository,
+          this.props.localRepository,
+          id
+        )
       )
     }
 
@@ -140,10 +152,9 @@ export class CICheckRunRerunDialog extends React.Component<
       <div className="ci-check-run-list check-run-rerun-list">
         <CICheckRunList
           checkRuns={this.state.rerunnable}
-          loadingActionLogs={false}
-          loadingActionWorkflows={false}
           notExpandable={true}
           isCondensedView={true}
+          hasStatusTooltip={true}
         />
       </div>
     )
@@ -190,7 +201,7 @@ export class CICheckRunRerunDialog extends React.Component<
           }${pluralize} that cannot be re-run`
     return (
       <div className="non-re-run-info warning-helper-text">
-        <Octicon symbol={OcticonSymbol.alert} />
+        <Octicon symbol={octicons.alert} />
 
         {`${warningPrefix}. A check run cannot be re-run if the check is more than one month old,
           the check or its dependent has not completed, or the check is not configured to be
@@ -220,7 +231,7 @@ export class CICheckRunRerunDialog extends React.Component<
     if (this.state.loadingCheckSuites && this.props.checkRuns.length > 1) {
       return (
         <div className="loading-rerun-checks">
-          <img src={BlankSlateImage} className="blankslate-image" />
+          <img src={BlankSlateImage} className="blankslate-image" alt="" />
           <div className="title">Please wait</div>
           <div className="call-to-action">
             Determining which checks can be re-run.

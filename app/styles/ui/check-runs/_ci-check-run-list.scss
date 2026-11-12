@@ -1,4 +1,6 @@
 .ci-check-run-list {
+  max-height: 70vh;
+
   :first-child {
     &.ci-check-run-list-group {
       :first-child {
@@ -8,6 +10,14 @@
           }
         }
       }
+    }
+  }
+
+  .ci-check-run-list-group {
+    h2 {
+      margin: 0;
+      font-size: inherit;
+      font-weight: inherit;
     }
   }
 

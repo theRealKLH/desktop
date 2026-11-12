@@ -1,18 +1,22 @@
 import * as React from 'react'
 import { Checkbox, CheckboxValue } from '../lib/checkbox'
 import { Octicon } from '../octicons'
-import * as OcticonSymbol from '../octicons/octicons.generated'
+import * as octicons from '../octicons/octicons.generated'
 import { RadioButton } from '../lib/radio-button'
-import { Popover, PopoverCaretPosition } from '../lib/popover'
-import { enableHideWhitespaceInDiffOption } from '../../lib/feature-flag'
-import { RepositorySectionTab } from '../../lib/app-state'
+import {
+  Popover,
+  PopoverAnchorPosition,
+  PopoverDecoration,
+} from '../lib/popover'
+import { Tooltip, TooltipDirection } from '../lib/tooltip'
+import { createObservableRef } from '../lib/observable-ref'
 
 interface IDiffOptionsProps {
-  readonly sourceTab: RepositorySectionTab
+  readonly isInteractiveDiff: boolean
   readonly hideWhitespaceChanges: boolean
   readonly onHideWhitespaceChangesChanged: (
     hideWhitespaceChanges: boolean
-  ) => Promise<void>
+  ) => void
 
   readonly showSideBySideDiff: boolean
   readonly onShowSideBySideDiffChanged: (showSideBySideDiff: boolean) => void
@@ -29,7 +33,9 @@ export class DiffOptions extends React.Component<
   IDiffOptionsProps,
   IDiffOptionsState
 > {
+  private innerButtonRef = createObservableRef<HTMLButtonElement>()
   private diffOptionsRef = React.createRef<HTMLDivElement>()
+  private gearIconRef = React.createRef<HTMLSpanElement>()
 
   public constructor(props: IDiffOptionsProps) {
     super(props)
@@ -76,11 +82,26 @@ export class DiffOptions extends React.Component<
   }
 
   public render() {
+    const buttonLabel = `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`
     return (
       <div className="diff-options-component" ref={this.diffOptionsRef}>
-        <button onClick={this.onButtonClick}>
-          <Octicon symbol={OcticonSymbol.gear} />
-          <Octicon symbol={OcticonSymbol.triangleDown} />
+        <button
+          aria-label={buttonLabel}
+          onClick={this.onButtonClick}
+          aria-expanded={this.state.isPopoverOpen}
+          ref={this.innerButtonRef}
+        >
+          <Tooltip
+            target={this.innerButtonRef}
+            direction={TooltipDirection.NORTH}
+            applyAriaDescribedBy={false}
+          >
+            {buttonLabel}
+          </Tooltip>
+          <span ref={this.gearIconRef}>
+            <Octicon symbol={octicons.gear} />
+          </span>
+          <Octicon symbol={octicons.triangleDown} />
         </button>
         {this.state.isPopoverOpen && this.renderPopover()}
       </div>
@@ -88,11 +109,17 @@ export class DiffOptions extends React.Component<
   }
 
   private renderPopover() {
+    const header = `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`
     return (
       <Popover
-        caretPosition={PopoverCaretPosition.TopRight}
+        ariaLabelledby="diff-options-popover-header"
+        anchor={this.gearIconRef.current}
+        anchorPosition={PopoverAnchorPosition.BottomRight}
+        decoration={PopoverDecoration.Balloon}
+        onMousedownOutside={this.closePopover}
         onClickOutside={this.closePopover}
       >
+        <h3 id="diff-options-popover-header">{header}</h3>
         {this.renderHideWhitespaceChanges()}
         {this.renderShowSideBySide()}
       </Popover>
@@ -108,8 +135,8 @@ export class DiffOptions extends React.Component<
 
   private renderShowSideBySide() {
     return (
-      <section>
-        <h3>Diff display</h3>
+      <fieldset role="radiogroup">
+        <legend>Diff display</legend>
         <RadioButton
           value="Unified"
           checked={!this.props.showSideBySideDiff}
@@ -126,21 +153,14 @@ export class DiffOptions extends React.Component<
           }
           onSelected={this.onSideBySideSelected}
         />
-      </section>
+      </fieldset>
     )
   }
 
   private renderHideWhitespaceChanges() {
-    if (
-      this.props.sourceTab === RepositorySectionTab.Changes &&
-      !enableHideWhitespaceInDiffOption()
-    ) {
-      return
-    }
-
     return (
-      <section>
-        <h3>Whitespace</h3>
+      <fieldset>
+        <legend>Whitespace</legend>
         <Checkbox
           value={
             this.props.hideWhitespaceChanges
@@ -152,13 +172,13 @@ export class DiffOptions extends React.Component<
             __DARWIN__ ? 'Hide Whitespace Changes' : 'Hide whitespace changes'
           }
         />
-        {this.props.sourceTab === RepositorySectionTab.Changes && (
+        {this.props.isInteractiveDiff && (
           <p className="secondary-text">
             Interacting with individual lines or hunks will be disabled while
             hiding whitespace.
           </p>
         )}
-      </section>
+      </fieldset>
     )
   }
 }

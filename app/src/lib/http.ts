@@ -2,7 +2,7 @@ import * as appProxy from '../ui/lib/app-proxy'
 import { URL } from 'url'
 
 /** The HTTP methods available. */
-export type HTTPMethod = 'GET' | 'POST' | 'PUT' | 'HEAD'
+export type HTTPMethod = 'GET' | 'POST' | 'PUT' | 'HEAD' | 'DELETE'
 
 /**
  * The structure of error messages returned from the GitHub API.
@@ -112,15 +112,17 @@ export function getAbsoluteUrl(endpoint: string, path: string): string {
  * @param reloadCache   - sets cache option to reload — The browser fetches
  * the resource from the remote server without first looking in the cache, but
  * then will update the cache with the downloaded resource.
+ * @param signal        - Optional cancellation signal for the request.
  */
 export function request(
   endpoint: string,
   token: string | null,
   method: HTTPMethod,
   path: string,
-  jsonBody?: Object,
-  customHeaders?: Object,
-  reloadCache: boolean = false
+  jsonBody?: object,
+  customHeaders?: object,
+  reloadCache: boolean = false,
+  signal?: AbortSignal
 ): Promise<Response> {
   const url = getAbsoluteUrl(endpoint, path)
 
@@ -131,7 +133,7 @@ export function request(
   }
 
   if (token) {
-    headers['Authorization'] = `token ${token}`
+    headers['Authorization'] = `Bearer ${token}`
   }
 
   headers = {
@@ -143,6 +145,7 @@ export function request(
     headers,
     method,
     body: JSON.stringify(jsonBody),
+    signal,
   }
 
   if (reloadCache) {
@@ -153,7 +156,7 @@ export function request(
 }
 
 /** Get the user agent to use for all requests. */
-function getUserAgent() {
+export function getUserAgent() {
   const platform = __DARWIN__ ? 'Macintosh' : 'Windows'
   return `GitHubDesktop/${appProxy.getVersion()} (${platform})`
 }
@@ -171,7 +174,7 @@ export async function parsedResponse<T>(response: Response): Promise<T> {
     // general API error.
     try {
       apiError = await deserialize<IAPIError>(response)
-    } catch (e) {
+    } catch {
       throw new APIError(response, null)
     }
 

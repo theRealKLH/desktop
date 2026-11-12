@@ -1,5 +1,9 @@
 import * as Path from 'path'
-import { Repository } from '../../models/repository'
+import {
+  getNonForkGitHubRepository,
+  isRepositoryWithForkedGitHubRepository,
+  Repository,
+} from '../../models/repository'
 import {
   WorkingDirectoryFileChange,
   AppFileStatusKind,
@@ -26,9 +30,6 @@ import {
   ErrorWithMetadata,
   IErrorMetadata,
 } from '../error-with-metadata'
-import { compare } from '../../lib/compare'
-import { queueWorkHigh } from '../../lib/queue-work'
-
 import {
   reset,
   GitResetMode,
@@ -63,7 +64,6 @@ import {
   getAheadBehind,
   revRange,
   revSymmetricDifference,
-  getSymbolicRef,
   getConfigValue,
   removeRemote,
   createTag,
@@ -71,6 +71,9 @@ import {
   deleteTag,
   MergeResult,
   createBranch,
+  updateRemoteHEAD,
+  getRemoteHEAD,
+  MergeOptions,
 } from '../git'
 import { GitError as DugiteError } from '../../lib/git'
 import { GitError } from 'dugite'
@@ -82,25 +85,31 @@ import {
   UpstreamRemoteName,
 } from './helpers/find-upstream-remote'
 import { findDefaultRemote } from './helpers/find-default-remote'
-import { IAuthor } from '../../models/author'
+import { Author, isKnownAuthor } from '../../models/author'
 import { formatCommitMessage } from '../format-commit-message'
 import { GitAuthor } from '../../models/git-author'
-import { IGitAccount } from '../../models/git-account'
 import { BaseStore } from './base-store'
 import { getStashes, getStashedFiles } from '../git/stash'
 import { IStashEntry, StashedChangesLoadStates } from '../../models/stash-entry'
 import { PullRequest } from '../../models/pull-request'
-import { StatsStore } from '../stats'
+import { IStatsStore } from '../stats'
 import { getTagsToPush, storeTagsToPush } from './helpers/tags-to-push-storage'
 import { DiffSelection, ITextDiff } from '../../models/diff'
 import { getDefaultBranch } from '../helpers/default-branch'
-import { stat } from 'fs/promises'
+import { rm, stat } from 'fs/promises'
 import { findForkedRemotesToPrune } from './helpers/find-forked-remotes-to-prune'
+import { findDefaultBranch } from '../find-default-branch'
+import {
+  withRepositoryGitOperation,
+  withoutRepositoryGitAccess,
+  getRepositoryGitErrorPropagation,
+} from '../git/repository-operation'
 
 /** The number of commits to load from history per batch. */
 const CommitBatchSize = 100
 
 const LoadingHistoryRequestKey = 'history'
+let nextCommitInputsRevision = 0
 
 /** The max number of recent branches to find. */
 const RecentBranchesLimit = 5
@@ -120,6 +129,8 @@ export class GitStore extends BaseStore {
 
   private _defaultBranch: Branch | null = null
 
+  private _upstreamDefaultBranch: Branch | null = null
+
   private _localTags: Map<string, string> | null = null
 
   private _allBranches: ReadonlyArray<Branch> = []
@@ -132,11 +143,14 @@ export class GitStore extends BaseStore {
 
   private _showCoAuthoredBy: boolean = false
 
-  private _coAuthors: ReadonlyArray<IAuthor> = []
+  private _coAuthors: ReadonlyArray<Author> = []
+  private _commitInputsRevision = 0
 
   private _aheadBehind: IAheadBehind | null = null
 
   private _tagsToPush: ReadonlyArray<string> = []
+
+  private _remotes: ReadonlyArray<IRemote> = []
 
   private _defaultRemote: IRemote | null = null
 
@@ -150,14 +164,62 @@ export class GitStore extends BaseStore {
 
   private _stashEntryCount = 0
 
+  private _repository: Repository
+
   public constructor(
-    private readonly repository: Repository,
+    repository: Repository,
     private readonly shell: IAppShell,
-    private readonly statsStore: StatsStore
+    private readonly statsStore: IStatsStore
   ) {
     super()
 
+    this._repository = repository
     this._tagsToPush = getTagsToPush(repository)
+  }
+
+  /** The current repository this store operates on. */
+  public get repository(): Repository {
+    return this._repository
+  }
+
+  /**
+   * Adopt a newer snapshot of the same working directory.
+   *
+   * The account, GitHub repository and other metadata of a repository can
+   * change while the store is in use. Subsequent operations use the new
+   * snapshot, so they resolve credentials for the current account.
+   */
+  public setRepository(repository: Repository) {
+    this._repository = repository
+  }
+
+  protected emitUpdate() {
+    withoutRepositoryGitAccess(() => super.emitUpdate())
+  }
+
+  protected emitError(error: Error) {
+    withoutRepositoryGitAccess(() => super.emitError(error))
+  }
+
+  /** Whether cached user inputs belong to this same physical repository identity. */
+  public matchesRepositoryIdentity(repository: Repository): boolean {
+    return (
+      this.repository.id === repository.id &&
+      this.repository.path === repository.path
+    )
+  }
+
+  /** Monotonic user-input changes, independent of status/history update emissions. */
+  public get commitInputsRevision(): number {
+    return this._commitInputsRevision
+  }
+
+  /** Share authoritative saved draft/co-author inputs across metadata representations without emitting. */
+  public adoptCommitInputs(source: GitStore): void {
+    this._commitInputsRevision = source._commitInputsRevision
+    this._commitMessage = source._commitMessage
+    this._coAuthors = source._coAuthors
+    this._showCoAuthoredBy = source._showCoAuthoredBy
   }
 
   /**
@@ -207,6 +269,12 @@ export class GitStore extends BaseStore {
 
   /** Load a batch of commits from the repository, using a given commitish object as the starting point */
   public async loadCommitBatch(commitish: string, skip: number) {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.loadCommitBatchReadCore(commitish, skip)
+    )
+  }
+
+  private async loadCommitBatchReadCore(commitish: string, skip: number) {
     if (this.requestsInFight.has(LoadingHistoryRequestKey)) {
       return null
     }
@@ -218,11 +286,15 @@ export class GitStore extends BaseStore {
 
     this.requestsInFight.add(requestKey)
 
-    const commits = await this.performFailableOperation(() =>
-      getCommits(this.repository, commitish, CommitBatchSize, skip)
-    )
-
-    this.requestsInFight.delete(requestKey)
+    const commits = await (async () => {
+      try {
+        return await this.performFailableOperation(() =>
+          getCommits(this.repository, commitish, CommitBatchSize, skip)
+        )
+      } finally {
+        this.requestsInFight.delete(requestKey)
+      }
+    })()
     if (!commits) {
       return null
     }
@@ -232,6 +304,12 @@ export class GitStore extends BaseStore {
   }
 
   public async refreshTags() {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.refreshTagsReadCore()
+    )
+  }
+
+  private async refreshTagsReadCore() {
     const previousTags = this._localTags
     const newTags = await this.performFailableOperation(() =>
       getAllTags(this.repository)
@@ -294,7 +372,7 @@ export class GitStore extends BaseStore {
     }
 
     if (numCreatedTags > 0) {
-      this.statsStore.recordTagCreated(numCreatedTags)
+      this.statsStore.increment('tagsCreated', numCreatedTags)
     }
 
     const commitsToStore = []
@@ -342,7 +420,7 @@ export class GitStore extends BaseStore {
     await this.refreshTags()
     this.addTagToPush(name)
 
-    this.statsStore.recordTagCreatedInDesktop()
+    this.statsStore.increment('tagsCreatedInDesktop')
   }
 
   public async deleteTag(name: string) {
@@ -358,7 +436,7 @@ export class GitStore extends BaseStore {
     await this.refreshTags()
     this.removeTagToPush(name)
 
-    this.statsStore.recordTagDeleted()
+    this.statsStore.increment('tagsDeleted')
   }
 
   /** The list of ordered SHAs. */
@@ -376,6 +454,12 @@ export class GitStore extends BaseStore {
 
   /** Load all the branches. */
   public async loadBranches() {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.loadBranchesReadCore()
+    )
+  }
+
+  private async loadBranchesReadCore() {
     const [localAndRemoteBranches, recentBranchNames] = await Promise.all([
       this.performFailableOperation(() => getBranches(this.repository)) || [],
       this.performFailableOperation(() =>
@@ -460,21 +544,41 @@ export class GitStore extends BaseStore {
     }
   }
 
-  private async refreshDefaultBranch() {
-    const defaultBranchName = await this.resolveDefaultBranch()
+  public async refreshDefaultBranch() {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.refreshDefaultBranchReadCore()
+    )
+  }
 
-    // Find the default branch among all of our branches, giving
-    // priority to local branches by sorting them before remotes
-    this._defaultBranch =
-      this._allBranches
-        .filter(
-          b =>
-            (b.name === defaultBranchName &&
-              b.upstreamWithoutRemote === null) ||
-            b.upstreamWithoutRemote === defaultBranchName
-        )
-        .sort((x, y) => compare(x.type, y.type))
-        .shift() || null
+  private async refreshDefaultBranchReadCore() {
+    this._defaultBranch = await findDefaultBranch(
+      this.repository,
+      this.allBranches,
+      this.defaultRemote?.name
+    )
+
+    // The upstream default branch is only relevant for forked GitHub repos when
+    // the fork behavior is contributing to the parent.
+    if (
+      !isRepositoryWithForkedGitHubRepository(this.repository) ||
+      getNonForkGitHubRepository(this.repository) ===
+        this.repository.gitHubRepository
+    ) {
+      this._upstreamDefaultBranch = null
+      return
+    }
+
+    const upstreamDefaultBranch =
+      (await getRemoteHEAD(this.repository, UpstreamRemoteName)) ??
+      getDefaultBranch()
+
+    this._upstreamDefaultBranch =
+      this._allBranches.find(
+        b =>
+          b.type === BranchType.Remote &&
+          b.remoteName === UpstreamRemoteName &&
+          b.nameWithoutRemote === upstreamDefaultBranch
+      ) ?? null
   }
 
   private addTagToPush(tagName: string) {
@@ -498,41 +602,6 @@ export class GitStore extends BaseStore {
 
     storeTagsToPush(this.repository, this._tagsToPush)
     this.emitUpdate()
-  }
-
-  /**
-   * Resolve the default branch name for the current repository,
-   * using the available API data, remote information or branch
-   * name conventions.
-   */
-  private async resolveDefaultBranch(): Promise<string> {
-    const { gitHubRepository } = this.repository
-    if (gitHubRepository && gitHubRepository.defaultBranch != null) {
-      return gitHubRepository.defaultBranch
-    }
-
-    if (this.currentRemote !== null) {
-      // the Git server should use [remote]/HEAD to advertise
-      // it's default branch, so see if it exists and matches
-      // a valid branch on the remote and attempt to use that
-      const remoteNamespace = `refs/remotes/${this.currentRemote.name}/`
-      const match = await getSymbolicRef(
-        this.repository,
-        `${remoteNamespace}HEAD`
-      )
-      if (
-        match != null &&
-        match.length > remoteNamespace.length &&
-        match.startsWith(remoteNamespace)
-      ) {
-        // strip out everything related to the remote because this
-        // is likely to be a tracked branch locally
-        // e.g. `main`, `develop`, etc
-        return match.substring(remoteNamespace.length)
-      }
-    }
-
-    return getDefaultBranch()
   }
 
   private refreshRecentBranches(
@@ -587,6 +656,15 @@ export class GitStore extends BaseStore {
     return this._defaultBranch
   }
 
+  /**
+   * The default branch of the upstream remote in a forked GitHub repository
+   * with the ForkContributionTarget.Parent behavior, or null if it cannot be
+   * inferred or is another kind of repository.
+   */
+  public get upstreamDefaultBranch(): Branch | null {
+    return this._upstreamDefaultBranch
+  }
+
   /** All branches, including the current branch and the default branch. */
   public get allBranches(): ReadonlyArray<Branch> {
     return this._allBranches
@@ -601,26 +679,42 @@ export class GitStore extends BaseStore {
    * Load local commits into memory for the current repository.
    *
    * @param branch The branch to query for unpublished commits.
+   * @param skip The amount of commits to skip to support pagination loading of local commits. If skip is undefined,
+   * this will reset the local commits cache and treat it as a pagination reset.
    *
    * If the tip of the repository does not have commits (i.e. is unborn), this
    * should be invoked with `null`, which clears any existing commits from the
    * store.
+   *
+   * @returns The list of commit SHAs that were ammended to the list of commits, or null if not applicable
    */
-  public async loadLocalCommits(branch: Branch | null): Promise<void> {
+  public async loadLocalCommits(
+    branch: Branch | null,
+    skip?: number
+  ): Promise<string[] | null> {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.loadLocalCommitsReadCore(branch, skip)
+    )
+  }
+
+  private async loadLocalCommitsReadCore(
+    branch: Branch | null,
+    skip?: number
+  ): Promise<string[] | null> {
     if (branch === null) {
       this._localCommitSHAs = []
-      return
+      return null
     }
 
     let localCommits: ReadonlyArray<Commit> | undefined
     if (branch.upstream) {
       const range = revRange(branch.upstream, branch.name)
       localCommits = await this.performFailableOperation(() =>
-        getCommits(this.repository, range, CommitBatchSize)
+        getCommits(this.repository, range, CommitBatchSize, skip)
       )
     } else {
       localCommits = await this.performFailableOperation(() =>
-        getCommits(this.repository, 'HEAD', CommitBatchSize, undefined, [
+        getCommits(this.repository, 'HEAD', CommitBatchSize, skip, [
           '--not',
           '--remotes',
         ])
@@ -628,12 +722,29 @@ export class GitStore extends BaseStore {
     }
 
     if (!localCommits) {
-      return
+      return null
     }
 
     this.storeCommits(localCommits)
-    this._localCommitSHAs = localCommits.map(c => c.sha)
+
+    let newCommitSHAs: string[]
+
+    if (skip !== undefined) {
+      // perform a soft ammend to the list of local commits
+      const previousSHAs = new Set(this._localCommitSHAs)
+      newCommitSHAs = localCommits
+        .map(c => c.sha)
+        .filter(sha => !previousSHAs.has(sha))
+      this._localCommitSHAs = [...this._localCommitSHAs, ...newCommitSHAs]
+    } else {
+      // reset the local commits since its a page reset
+      newCommitSHAs = localCommits.map(c => c.sha)
+      this._localCommitSHAs = Array.from(newCommitSHAs)
+    }
+
     this.emitUpdate()
+
+    return newCommitSHAs
   }
 
   /**
@@ -709,6 +820,36 @@ export class GitStore extends BaseStore {
       return
     }
 
+    const coAuthorsRestored = await this.restoreCoAuthorsFromCommit(commit)
+    if (coAuthorsRestored) {
+      return
+    }
+
+    this._commitInputsRevision = ++nextCommitInputsRevision
+    this._commitMessage = {
+      summary: commit.summary,
+      description: commit.body,
+      timestamp: Date.now(),
+    }
+    this.emitUpdate()
+  }
+
+  public async prepareToAmendCommit(commit: Commit) {
+    const coAuthorsRestored = await this.restoreCoAuthorsFromCommit(commit)
+    if (coAuthorsRestored) {
+      return
+    }
+
+    this._commitInputsRevision = ++nextCommitInputsRevision
+    this._commitMessage = {
+      summary: commit.summary,
+      description: commit.body,
+      timestamp: Date.now(),
+    }
+    this.emitUpdate()
+  }
+
+  private async restoreCoAuthorsFromCommit(commit: Commit) {
     // Let's be safe about this since it's untried waters.
     // If we can restore co-authors then that's fantastic
     // but if we can't we shouldn't be throwing an error,
@@ -718,17 +859,14 @@ export class GitStore extends BaseStore {
       try {
         await this.loadCommitAndCoAuthors(commit)
         this.emitUpdate()
-        return
+
+        return true
       } catch (e) {
         log.error('Failed to restore commit and co-authors, falling back', e)
       }
     }
 
-    this._commitMessage = {
-      summary: commit.summary,
-      description: commit.body,
-    }
-    this.emitUpdate()
+    return false
   }
 
   /**
@@ -756,9 +894,11 @@ export class GitStore extends BaseStore {
 
     // This is the happy path, nothing more for us to do
     if (coAuthorTrailers.length === 0) {
+      this._commitInputsRevision = ++nextCommitInputsRevision
       this._commitMessage = {
         summary: commit.summary,
         description: commit.body,
+        timestamp: Date.now(),
       }
 
       return
@@ -770,9 +910,8 @@ export class GitStore extends BaseStore {
     const lines = unfolded.split('\n')
 
     // We don't know (I mean, we're fairly sure) what the separator character
-    // used for the trailer is so we call out to git to get all possible
-    // characters. We'll need them in a bit
-    const separators = await getTrailerSeparatorCharacters(this.repository)
+    // used for the trailer is so we call out to git to get all possibilities
+    let separators: string | undefined = undefined
 
     // We know that what we've got now is well formed so we can capture the leading
     // token, followed by the separator char and a single space, followed by the
@@ -787,7 +926,14 @@ export class GitStore extends BaseStore {
       const match = coAuthorRe.exec(line)
 
       // Not a trailer line, we're sure of that
-      if (!match || separators.indexOf(match[1]) === -1) {
+      if (!match) {
+        continue
+      }
+
+      // Only shell out for separators if we really need them
+      separators ??= await getTrailerSeparatorCharacters(this.repository)
+
+      if (separators.indexOf(match[1]) === -1) {
         continue
       }
 
@@ -827,15 +973,17 @@ export class GitStore extends BaseStore {
 
     const newBody = lines.join('\n').trim()
 
+    this._commitInputsRevision = ++nextCommitInputsRevision
     this._commitMessage = {
       summary: commit.summary,
       description: newBody,
+      timestamp: Date.now(),
     }
 
     const extractedAuthors = extractedTrailers.map(t =>
       GitAuthor.parse(t.value)
     )
-    const newAuthors = new Array<IAuthor>()
+    const newAuthors = new Array<Author>()
 
     // Last step, phew! The most likely scenario where we
     // get called is when someone has just made a commit and
@@ -852,12 +1000,15 @@ export class GitStore extends BaseStore {
       }
 
       const { name, email } = extractedAuthor
-      const existing = this.coAuthors.find(
-        a => a.name === name && a.email === email && a.username !== null
+      const existing = this.coAuthors
+        .filter(isKnownAuthor)
+        .find(a => a.name === name && a.email === email && a.username !== null)
+      newAuthors.push(
+        existing || { kind: 'known', name, email, username: null }
       )
-      newAuthors.push(existing || { name, email, username: null })
     }
 
+    this._commitInputsRevision = ++nextCommitInputsRevision
     this._coAuthors = newAuthors
 
     if (this._coAuthors.length > 0 && this._showCoAuthoredBy === false) {
@@ -877,7 +1028,11 @@ export class GitStore extends BaseStore {
     errorMetadata?: IErrorMetadata
   ): Promise<T | undefined> {
     try {
-      const result = await fn()
+      const result = await withRepositoryGitOperation(
+        this.repository.path,
+        'mutation',
+        fn
+      )
       return result
     } catch (e) {
       e = new ErrorWithMetadata(e, {
@@ -885,6 +1040,9 @@ export class GitStore extends BaseStore {
         ...errorMetadata,
       })
 
+      if (getRepositoryGitErrorPropagation()) {
+        throw e
+      }
       this.emitError(e)
       return undefined
     }
@@ -908,7 +1066,7 @@ export class GitStore extends BaseStore {
    * Gets a list of co-authors to use when crafting the next
    * commit.
    */
-  public get coAuthors(): ReadonlyArray<IAuthor> {
+  public get coAuthors(): ReadonlyArray<Author> {
     return this._coAuthors
   }
 
@@ -922,7 +1080,6 @@ export class GitStore extends BaseStore {
    *                           the overall fetch progress.
    */
   public async fetch(
-    account: IGitAccount | null,
     backgroundTask: boolean,
     progressCallback?: (fetchProgress: IFetchProgress) => void
   ): Promise<void> {
@@ -948,7 +1105,6 @@ export class GitStore extends BaseStore {
 
     if (remotes.size > 0) {
       await this.fetchRemotes(
-        account,
         [...remotes.values()],
         backgroundTask,
         progressCallback
@@ -988,7 +1144,6 @@ export class GitStore extends BaseStore {
    *                           the overall fetch progress.
    */
   public async fetchRemotes(
-    account: IGitAccount | null,
     remotes: ReadonlyArray<IRemote>,
     backgroundTask: boolean,
     progressCallback?: (fetchProgress: IFetchProgress) => void
@@ -1003,7 +1158,7 @@ export class GitStore extends BaseStore {
       const remote = remotes[i]
       const startProgressValue = i * weight
 
-      await this.fetchRemote(account, remote, backgroundTask, progress => {
+      await this.fetchRemote(remote, backgroundTask, progress => {
         if (progress && progressCallback) {
           progressCallback({
             ...progress,
@@ -1024,19 +1179,36 @@ export class GitStore extends BaseStore {
    *                           the overall fetch progress.
    */
   public async fetchRemote(
-    account: IGitAccount | null,
     remote: IRemote,
     backgroundTask: boolean,
     progressCallback?: (fetchProgress: IFetchProgress) => void
   ): Promise<void> {
+    const repo = this.repository
     const retryAction: RetryAction = {
       type: RetryActionType.Fetch,
-      repository: this.repository,
+      repository: repo,
     }
-    await this.performFailableOperation(
-      () => fetchRepo(this.repository, account, remote, progressCallback),
+    const fetchSucceeded = await this.performFailableOperation(
+      async () => {
+        await fetchRepo(repo, remote, progressCallback, backgroundTask)
+        return true
+      },
       { backgroundTask, retryAction }
     )
+
+    // If the pull failed we shouldn't try to update the remote HEAD
+    // because there's a decent chance that it failed either because we
+    // didn't have the correct credentials (which we won't this time
+    // either) or because there's a network error which likely will
+    // persist for the next operation as well.
+    if (fetchSucceeded) {
+      // Updating the local HEAD symref isn't critical so we don't want
+      // to show an error message to the user and have them retry the
+      // entire pull operation if it fails.
+      await updateRemoteHEAD(repo, remote, backgroundTask).catch(e =>
+        log.error('Failed updating remote HEAD', e)
+      )
+    }
   }
 
   /**
@@ -1046,28 +1218,39 @@ export class GitStore extends BaseStore {
    * @param refspec - The association between a remote and local ref to use as
    *                  part of this action. Refer to git-scm for more
    *                  information on refspecs: https://www.git-scm.com/book/tr/v2/Git-Internals-The-Refspec
-   *
    */
-  public async fetchRefspec(
-    account: IGitAccount | null,
-    refspec: string
-  ): Promise<void> {
+  public async fetchRefspec(refspec: string): Promise<void> {
     // TODO: we should favour origin here
     const remotes = await getRemotes(this.repository)
 
     for (const remote of remotes) {
       await this.performFailableOperation(() =>
-        fetchRefspec(this.repository, account, remote, refspec)
+        fetchRefspec(this.repository, remote, refspec)
       )
     }
   }
 
-  public async loadStatus(): Promise<IStatusResult | null> {
-    const status = await this.performFailableOperation(() =>
-      getStatus(this.repository)
+  public async loadStatus(options?: {
+    readonly propagateErrors: boolean
+  }): Promise<IStatusResult | null> {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.loadStatusCore(options)
     )
+  }
+
+  private async loadStatusCore(options?: {
+    readonly propagateErrors: boolean
+  }): Promise<IStatusResult | null> {
+    const strict =
+      options?.propagateErrors === true || getRepositoryGitErrorPropagation()
+    const status = strict
+      ? await getStatus(this.repository, true, true)
+      : await this.performFailableOperation(() => getStatus(this.repository))
 
     if (!status) {
+      if (strict) {
+        throw new Error('Required Git status could not be loaded')
+      }
       return null
     }
 
@@ -1129,6 +1312,12 @@ export class GitStore extends BaseStore {
    * Refreshes the list of GitHub Desktop created stash entries for the repository
    */
   public async loadStashEntries(): Promise<void> {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.loadStashEntriesReadCore()
+    )
+  }
+
+  private async loadStashEntriesReadCore(): Promise<void> {
     const map = new Map<string, IStashEntry>()
     const stash = await getStashes(this.repository)
 
@@ -1164,6 +1353,10 @@ export class GitStore extends BaseStore {
     return this._tip && this._tip.kind === TipState.Valid
       ? this._desktopStashEntries.get(this._tip.branch.name) || null
       : null
+  }
+
+  public get desktopStashEntries(): ReadonlyMap<string, IStashEntry> {
+    return this._desktopStashEntries
   }
 
   /** The total number of stash entries */
@@ -1219,7 +1412,14 @@ export class GitStore extends BaseStore {
   }
 
   public async loadRemotes(): Promise<void> {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.loadRemotesReadCore()
+    )
+  }
+
+  private async loadRemotesReadCore(): Promise<void> {
     const remotes = await getRemotes(this.repository)
+    this._remotes = remotes
     this._defaultRemote = findDefaultRemote(remotes)
 
     const currentRemoteName =
@@ -1321,6 +1521,11 @@ export class GitStore extends BaseStore {
     return this._aheadBehind
   }
 
+  /** The list of configured remotes for the repository */
+  public get remotes() {
+    return this._remotes
+  }
+
   /**
    * The remote considered to be the "default" remote in the repository.
    *
@@ -1358,6 +1563,7 @@ export class GitStore extends BaseStore {
    * co-authors field in the commit message component
    */
   public setShowCoAuthoredBy(showCoAuthoredBy: boolean) {
+    this._commitInputsRevision = ++nextCommitInputsRevision
     this._showCoAuthoredBy = showCoAuthoredBy
     // Clear co-authors when hiding
     if (!showCoAuthoredBy) {
@@ -1371,12 +1577,20 @@ export class GitStore extends BaseStore {
    *
    * @param coAuthors  Zero or more authors
    */
-  public setCoAuthors(coAuthors: ReadonlyArray<IAuthor>) {
+  public setCoAuthors(coAuthors: ReadonlyArray<Author>) {
+    this._commitInputsRevision = ++nextCommitInputsRevision
     this._coAuthors = coAuthors
     this.emitUpdate()
   }
 
   public setCommitMessage(message: ICommitMessage): Promise<void> {
+    if (
+      message !== DefaultCommitMessage &&
+      message.timestamp < this._commitMessage.timestamp
+    ) {
+      return Promise.resolve()
+    }
+    this._commitInputsRevision = ++nextCommitInputsRevision
     this._commitMessage = message
 
     this.emitUpdate()
@@ -1390,7 +1604,16 @@ export class GitStore extends BaseStore {
 
   /** Update the last fetched date. */
   public async updateLastFetched() {
-    const fetchHeadPath = Path.join(this.repository.path, '.git', 'FETCH_HEAD')
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.updateLastFetchedReadCore()
+    )
+  }
+
+  private async updateLastFetchedReadCore() {
+    const fetchHeadPath = Path.join(
+      this.repository.resolvedGitDir,
+      'FETCH_HEAD'
+    )
 
     try {
       const fstat = await stat(fetchHeadPath)
@@ -1412,7 +1635,7 @@ export class GitStore extends BaseStore {
   /** Merge the named branch into the current branch. */
   public merge(
     branch: Branch,
-    isSquash: boolean = false
+    options?: MergeOptions
   ): Promise<MergeResult | undefined> {
     if (this.tip.kind !== TipState.Valid) {
       throw new Error(
@@ -1421,9 +1644,22 @@ export class GitStore extends BaseStore {
     }
 
     const currentBranch = this.tip.branch.name
+    let aborted = false
+    const onHookFailure = options?.onHookFailure
 
     return this.performFailableOperation(
-      () => merge(this.repository, branch.name, isSquash),
+      () =>
+        merge(this.repository, branch.name, {
+          ...options,
+          onHookFailure:
+            onHookFailure === undefined
+              ? undefined
+              : (hookName, terminalOutput) =>
+                  onHookFailure(hookName, terminalOutput).then(result => {
+                    aborted = result === 'abort'
+                    return result
+                  }),
+        }).catch(e => (aborted ? MergeResult.Failed : Promise.reject(e))),
       {
         gitContext: {
           kind: 'merge',
@@ -1462,24 +1698,33 @@ export class GitStore extends BaseStore {
 
     const submodules = await listSubmodules(this.repository)
 
-    await queueWorkHigh(files, async file => {
+    for (const file of files) {
       const foundSubmodule = submodules.some(s => s.path === file.path)
 
-      if (
-        file.status.kind !== AppFileStatusKind.Deleted &&
-        !foundSubmodule &&
-        moveToTrash
-      ) {
-        // N.B. moveItemToTrash can take a fair bit of time which is why we're
-        // running it inside this work queue that spreads out the calls across
-        // as many animation frames as it needs to.
-        try {
-          await this.shell.moveItemToTrash(
-            Path.resolve(this.repository.path, file.path)
-          )
-        } catch (e) {
-          if (askForConfirmationOnDiscardChangesPermanently) {
-            throw new DiscardChangesError(e, this.repository, files)
+      if (file.status.kind !== AppFileStatusKind.Deleted && !foundSubmodule) {
+        if (moveToTrash) {
+          try {
+            await this.shell.moveItemToTrash(
+              Path.resolve(this.repository.path, file.path)
+            )
+          } catch (e) {
+            if (askForConfirmationOnDiscardChangesPermanently) {
+              throw new DiscardChangesError(e, this.repository, files)
+            }
+
+            // The user has received the confirmation dialog in past and has
+            // chosen to always discard the changes permanently if trash failes.
+            // We need to remove the file manually.
+            if (file.status.kind === AppFileStatusKind.Untracked) {
+              await rm(Path.join(this.repository.path, file.path))
+            }
+          }
+        } else if (moveToTrash === false) {
+          // The user has received the confirmation dialog and has chosen to
+          // discard the changes permanently. We need to remove the file
+          // manually.
+          if (file.status.kind === AppFileStatusKind.Untracked) {
+            await rm(Path.join(this.repository.path, file.path))
           }
         }
       }
@@ -1500,7 +1745,7 @@ export class GitStore extends BaseStore {
         pathsToCheckout.push(file.path)
         pathsToReset.push(file.path)
       }
-    })
+    }
 
     // Check the index to see which files actually have changes there as compared to HEAD
     const changedFilesInIndex = await getIndexChanges(this.repository)
@@ -1563,11 +1808,10 @@ export class GitStore extends BaseStore {
   public async revertCommit(
     repository: Repository,
     commit: Commit,
-    account: IGitAccount | null,
     progressCallback?: (fetchProgress: IRevertProgress) => void
   ): Promise<void> {
     await this.performFailableOperation(() =>
-      revertCommit(repository, commit, account, progressCallback)
+      revertCommit(repository, commit, this.currentRemote, progressCallback)
     )
 
     this.emitUpdate()
@@ -1600,6 +1844,15 @@ export class GitStore extends BaseStore {
    * Returns the commits associated with `branch` and ahead/behind info;
    */
   public async getCompareCommits(
+    branch: Branch,
+    comparisonMode: ComparisonMode
+  ): Promise<ICompareResult | null> {
+    return withRepositoryGitOperation(this.repository.path, 'read', () =>
+      this.getCompareCommitsReadCore(branch, comparisonMode)
+    )
+  }
+
+  private async getCompareCommitsReadCore(
     branch: Branch,
     comparisonMode: ComparisonMode
   ): Promise<ICompareResult | null> {
@@ -1651,5 +1904,29 @@ export class GitStore extends BaseStore {
     for (const remote of remotesToPrune) {
       await removeRemote(this.repository, remote.name)
     }
+  }
+
+  /**
+   * Returns the commits associated with merging the comparison branch into the
+   * base branch.
+   */
+  public async getCommitsBetweenBranches(
+    baseBranch: Branch,
+    comparisonBranch: Branch
+  ): Promise<ReadonlyArray<Commit>> {
+    const revisionRange = revRange(baseBranch.name, comparisonBranch.name)
+    const commits = await this.performFailableOperation(() =>
+      getCommits(this.repository, revisionRange)
+    )
+
+    if (commits == null) {
+      return []
+    }
+
+    if (commits.length > 0) {
+      this.storeCommits(commits)
+    }
+
+    return commits
   }
 }

@@ -1,4 +1,6 @@
-import { getDotComAPIEndpoint, IAPIEmail } from '../lib/api'
+import { getDotComAPIEndpoint, getHTMLURL, IAPIEmail } from '../lib/api'
+
+export const CopilotLicenseTypeNoAccess = 'NO_ACCESS'
 
 /**
  * Returns a value indicating whether two account instances
@@ -13,6 +15,35 @@ export function accountEquals(x: Account, y: Account) {
 }
 
 /**
+ * Identifies an account by its endpoint and login without carrying any of its
+ * credentials. Use this when an account needs to be referenced from data that
+ * may outlive the operation it was created for (for example retry actions),
+ * and resolve the signed-in `Account` when its token is needed.
+ */
+export interface IAccountIdentity {
+  readonly endpoint: string
+  readonly login: string
+}
+
+/**
+ * Get a key uniquely identifying an account by its endpoint and login.
+ *
+ * Multiple accounts can be signed in to the same endpoint, so the endpoint
+ * alone doesn't identify an account. Logins are compared case-insensitively.
+ */
+export function getAccountKey(account: IAccountIdentity): string {
+  return `${account.endpoint}/users/${account.login}`.toLowerCase()
+}
+
+/** Whether both refer to the same account, by endpoint and login. */
+export function isSameAccount(
+  x: IAccountIdentity,
+  y: IAccountIdentity | null | undefined
+): boolean {
+  return y != null && getAccountKey(x) === getAccountKey(y)
+}
+
+/**
  * A GitHub account, representing the user found on GitHub The Website or GitHub Enterprise.
  *
  * This contains a token that will be used for operations that require authentication.
@@ -20,8 +51,10 @@ export function accountEquals(x: Account, y: Account) {
 export class Account {
   /** Create an account which can be used to perform unauthenticated API actions */
   public static anonymous(): Account {
-    return new Account('', getDotComAPIEndpoint(), '', [], '', -1, '')
+    return new Account('', getDotComAPIEndpoint(), '', [], '', -1, '', 'free')
   }
+
+  private _friendlyEndpoint: string | undefined = undefined
 
   /**
    * Create an instance of an account
@@ -33,6 +66,11 @@ export class Account {
    * @param avatarURL The profile URL to render for this account
    * @param id The GitHub.com or GitHub Enterprise database id for this account.
    * @param name The friendly name associated with this account
+   * @param plan The plan associated with this account
+   * @param copilotEndpoint The endpoint for the Copilot API
+   * @param isCopilotDesktopEnabled Whether Copilot for Desktop is enabled for this account
+   * @param features The Desktop-specific features available to this account
+   * @param copilotLicenseType The user's Copilot license type
    */
   public constructor(
     public readonly login: string,
@@ -41,7 +79,12 @@ export class Account {
     public readonly emails: ReadonlyArray<IAPIEmail>,
     public readonly avatarURL: string,
     public readonly id: number,
-    public readonly name: string
+    public readonly name: string,
+    public readonly plan?: string,
+    public readonly copilotEndpoint?: string,
+    public readonly isCopilotDesktopEnabled?: boolean,
+    public readonly features?: ReadonlyArray<string>,
+    public readonly copilotLicenseType?: string
   ) {}
 
   public withToken(token: string): Account {
@@ -52,7 +95,12 @@ export class Account {
       this.emails,
       this.avatarURL,
       this.id,
-      this.name
+      this.name,
+      this.plan,
+      this.copilotEndpoint,
+      this.isCopilotDesktopEnabled,
+      this.features,
+      this.copilotLicenseType
     )
   }
 
@@ -65,4 +113,42 @@ export class Account {
   public get friendlyName(): string {
     return this.name !== '' ? this.name : this.login
   }
+
+  /**
+   * Get a human-friendly description of the Account endpoint.
+   *
+   * Accounts on GitHub.com will return the string 'GitHub.com'
+   * whereas GitHub Enterprise accounts will return the
+   * hostname without the protocol and/or path.
+   */
+  public get friendlyEndpoint(): string {
+    return (this._friendlyEndpoint ??= getFriendlyEndpoint(this.endpoint))
+  }
 }
+
+/**
+ * Get a human-friendly description of an API endpoint.
+ *
+ * The GitHub.com API endpoint returns the string 'GitHub.com' whereas
+ * GitHub Enterprise endpoints return the hostname without the protocol
+ * and/or path.
+ */
+export function getFriendlyEndpoint(endpoint: string): string {
+  return endpoint === getDotComAPIEndpoint()
+    ? 'GitHub.com'
+    : new URL(getHTMLURL(endpoint)).hostname
+}
+
+/**
+ * Whether or not the given account is a GitHub.com account as opposed to
+ * a GitHub Enteprise account.
+ */
+export const isDotComAccount = (account: Account) =>
+  account.endpoint === getDotComAPIEndpoint()
+
+/**
+ * Whether or not the given account is a GitHub Enterprise account (as opposed to
+ * a GitHub.com account)
+ */
+export const isEnterpriseAccount = (account: Account) =>
+  !isDotComAccount(account)

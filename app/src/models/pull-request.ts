@@ -41,3 +41,24 @@ export class PullRequest {
     public readonly body: string
   ) {}
 }
+
+/** The types of pull request suggested next actions */
+export enum PullRequestSuggestedNextAction {
+  PreviewPullRequest = 'PreviewPullRequest',
+  CreatePullRequest = 'CreatePullRequest',
+}
+
+/** Type guard which narrows a string to a PullRequestSuggestedNextAction */
+export function isIdPullRequestSuggestedNextAction(
+  id: string
+): id is
+  | PullRequestSuggestedNextAction.PreviewPullRequest
+  | PullRequestSuggestedNextAction.CreatePullRequest {
+  return (
+    id === PullRequestSuggestedNextAction.PreviewPullRequest ||
+    id === PullRequestSuggestedNextAction.CreatePullRequest
+  )
+}
+
+export const defaultPullRequestSuggestedNextAction =
+  PullRequestSuggestedNextAction.PreviewPullRequest

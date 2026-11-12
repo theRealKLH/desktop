@@ -1,16 +1,20 @@
 import * as React from 'react'
 import classNames from 'classnames'
 import { Octicon } from '../octicons'
-import * as OcticonSymbol from '../octicons/octicons.generated'
+import * as octicons from '../octicons/octicons.generated'
 import { CIStatus } from './ci-status'
 import { HighlightText } from '../lib/highlight-text'
 import { IMatches } from '../../lib/fuzzy-find'
 import { GitHubRepository } from '../../models/github-repository'
+import { Repository } from '../../models/repository'
 import { Dispatcher } from '../dispatcher'
 import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
 import { DropTargetType } from '../../models/drag-drop'
 import { getPullRequestCommitRef } from '../../models/pull-request'
 import { formatRelative } from '../../lib/format-relative'
+import { TooltippedContent } from '../lib/tooltipped-content'
+import { getPreferAbsoluteDates } from '../../models/formatting-preferences'
+import { formatDate } from '../../lib/format-date'
 
 export interface IPullRequestListItemProps {
   /** The title. */
@@ -44,6 +48,7 @@ export interface IPullRequestListItemProps {
 
   /** The GitHub repository to use when looking up commit status. */
   readonly repository: GitHubRepository
+  readonly localRepository: Repository
 
   /** When a drag element has landed on a pull request */
   readonly onDropOntoPullRequest: (prNumber: number) => void
@@ -76,8 +81,10 @@ export class PullRequestListItem extends React.Component<
       return undefined
     }
 
-    const timeAgo = formatRelative(this.props.created.getTime() - Date.now())
-    const subtitle = `#${this.props.number} opened ${timeAgo} by ${this.props.author}`
+    const dateText = getPreferAbsoluteDates()
+      ? formatDate(this.props.created)
+      : formatRelative(this.props.created.getTime() - Date.now())
+    const subtitle = `#${this.props.number} opened ${dateText} by ${this.props.author}`
 
     return this.props.draft ? `${subtitle} • Draft` : subtitle
   }
@@ -126,6 +133,11 @@ export class PullRequestListItem extends React.Component<
     })
 
     return (
+      /**
+       * This a11y linter is a false-positive as the element is a drop target
+       * facilitating our drag and drop functionality for cherry-picking.
+       */
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
       <div
         className={className}
         onMouseEnter={this.onMouseEnter}
@@ -137,18 +149,28 @@ export class PullRequestListItem extends React.Component<
             className="icon"
             symbol={
               this.props.draft
-                ? OcticonSymbol.gitPullRequestDraft
-                : OcticonSymbol.gitPullRequest
+                ? octicons.gitPullRequestDraft
+                : octicons.gitPullRequest
             }
           />
         </div>
         <div className="info">
-          <div className="title" title={title}>
+          <TooltippedContent
+            tagName="div"
+            className="title"
+            tooltip={title}
+            onlyWhenOverflowed={true}
+          >
             <HighlightText text={title || ''} highlight={matches.title} />
-          </div>
-          <div className="subtitle" title={subtitle}>
+          </TooltippedContent>
+          <TooltippedContent
+            tagName="div"
+            className="subtitle"
+            tooltip={subtitle}
+            onlyWhenOverflowed={true}
+          >
             <HighlightText text={subtitle || ''} highlight={matches.subtitle} />
-          </div>
+          </TooltippedContent>
         </div>
         {this.renderPullRequestStatus()}
       </div>
@@ -162,6 +184,7 @@ export class PullRequestListItem extends React.Component<
         <CIStatus
           dispatcher={this.props.dispatcher}
           repository={this.props.repository}
+          localRepository={this.props.localRepository}
           commitRef={ref}
         />
       </div>

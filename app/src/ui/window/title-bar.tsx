@@ -3,8 +3,8 @@ import memoizeOne from 'memoize-one'
 import { WindowState } from '../../lib/window-state'
 import { WindowControls } from './window-controls'
 import { Octicon } from '../octicons/octicon'
-import * as OcticonSymbol from '../octicons/octicons.generated'
-import { isMacOSBigSurOrLater } from '../../lib/get-os'
+import * as octicons from '../octicons/octicons.generated'
+import { isMacOSBigSurOrLater, isMacOSTahoeOrLater } from '../../lib/get-os'
 import {
   getAppleActionOnDoubleClick,
   isWindowMaximized,
@@ -16,8 +16,15 @@ import {
 /** Get the height (in pixels) of the title bar depending on the platform */
 export function getTitleBarHeight() {
   if (__DARWIN__) {
-    // Big Sur has taller title bars, see #10980
-    return isMacOSBigSurOrLater() ? 26 : 22
+    if (isMacOSTahoeOrLater()) {
+      // Tahoe also has taller title bars, see #21135
+      return 32
+    } else if (isMacOSBigSurOrLater()) {
+      // Big Sur has taller title bars, see #10980
+      return 26
+    } else {
+      return 22
+    }
   }
 
   return 28
@@ -103,7 +110,7 @@ export class TitleBar extends React.Component<ITitleBarProps> {
       this.props.titleBarStyle === 'light' ? 'light-title-bar' : ''
 
     const appIcon = this.props.showAppIcon ? (
-      <Octicon className="app-icon" symbol={OcticonSymbol.markGithub} />
+      <Octicon className="app-icon" symbol={octicons.markGithub} />
     ) : null
 
     const onTitlebarDoubleClick = __DARWIN__

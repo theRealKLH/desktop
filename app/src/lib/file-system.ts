@@ -1,21 +1,17 @@
-import * as Os from 'os'
-import * as Path from 'path'
 import { Disposable } from 'event-kit'
 import { Tailer } from './tailer'
 import byline from 'byline'
-import * as Crypto from 'crypto'
 import { createReadStream } from 'fs'
-import { mkdtemp } from 'fs/promises'
+import { randomBytes } from 'crypto'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 /**
  * Get a path to a temp file using the given name. Note that the file itself
  * will not be created.
  */
-export async function getTempFilePath(name: string): Promise<string> {
-  const tempDir = Path.join(Os.tmpdir(), `${name}-`)
-  const directory = await mkdtemp(tempDir)
-  return Path.join(directory, name)
-}
+export const getTempFilePath = (name: string) =>
+  join(tmpdir(), `${name}-${randomBytes(8).toString('hex')}`)
 
 /**
  * Tail the file and call the callback on every line.
@@ -78,25 +74,5 @@ export async function readPartialFile(
       })
       .on('error', reject)
       .on('end', () => resolve(Buffer.concat(chunks, total)))
-  })
-}
-
-export async function getFileHash(
-  path: string,
-  type: 'sha1' | 'sha256'
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const hash = Crypto.createHash(type)
-    hash.setEncoding('hex')
-    const input = createReadStream(path)
-
-    hash.on('finish', () => {
-      resolve(hash.read() as string)
-    })
-
-    input.on('error', reject)
-    hash.on('error', reject)
-
-    input.pipe(hash)
   })
 }

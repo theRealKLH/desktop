@@ -3,7 +3,7 @@ import { RequestResponseChannels, RequestChannels } from '../lib/ipc-shared'
 import * as ipcRenderer from '../lib/ipc-renderer'
 import { stat } from 'fs/promises'
 import { isApplicationBundle } from '../lib/is-application-bundle'
-import { pathExists } from './lib/path-exists'
+import { pathExists } from '../lib/path-exists'
 
 /**
  * Creates a strongly typed proxy method for sending a duplex IPC message to the
@@ -89,6 +89,7 @@ export const isWindowFocused = invokeProxy('is-window-focused', 0)
 export const focusWindow = sendProxy('focus-window', 0)
 
 const _showItemInFolder = invokeProxy('show-item-in-folder', 1)
+const confirmRevealDirectory = invokeProxy('confirm-reveal-directory', 0)
 
 export const showItemInFolder = (path: string) =>
   pathExists(path)
@@ -97,54 +98,123 @@ export const showItemInFolder = (path: string) =>
 
 const UNSAFE_openDirectory = sendProxy('unsafe-open-directory', 1)
 
-export async function showFolderContents(path: string) {
-  const stats = await stat(path).catch(err => {
+interface IFileInformation {
+  readonly isDirectory: () => boolean
+}
+
+/** Platform operations used to safely show the contents of a folder. */
+export interface IShowFolderContentsDependencies {
+  /** Whether the current platform is macOS. */
+  readonly isDarwin: boolean
+  /** Reads file information for the target path. */
+  readonly stat: (path: string) => Promise<IFileInformation>
+  /** Determines whether a path is a macOS application bundle. */
+  readonly isApplicationBundle: (path: string) => Promise<boolean>
+  /** Requests confirmation before revealing a potentially executable path. */
+  readonly confirmReveal: () => Promise<boolean>
+  /** Opens a directory directly in the platform file manager. */
+  readonly openDirectory: (path: string) => void
+  /** Reveals and selects a path in the platform file manager. */
+  readonly revealItem: (path: string) => Promise<void>
+}
+
+const defaultShowFolderContentsDependencies: IShowFolderContentsDependencies = {
+  isDarwin: __DARWIN__,
+  stat,
+  isApplicationBundle,
+  confirmReveal: confirmRevealDirectory,
+  openDirectory: UNSAFE_openDirectory,
+  revealItem: _showItemInFolder,
+}
+
+async function revealAfterConfirmation(
+  path: string,
+  dependencies: IShowFolderContentsDependencies
+) {
+  const confirmed = await dependencies.confirmReveal().catch(err => {
+    // If the warning cannot be shown, leave the path untouched.
+    log.error(`Unable to confirm revealing folder '${path}'`, err)
+    return false
+  })
+
+  if (confirmed) {
+    await dependencies
+      .revealItem(path)
+      .catch(err => log.error(`Unable to reveal folder '${path}'`, err))
+  }
+}
+
+/**
+ * Shows a folder's contents, warning for identified application bundles on macOS.
+ *
+ * Dependencies default to the platform implementations and can be supplied
+ * for isolated testing of the classification and confirmation flow.
+ */
+export async function showFolderContents(
+  path: string,
+  dependencies = defaultShowFolderContentsDependencies
+) {
+  const stats = await dependencies.stat(path).catch(err => {
     log.error(`Unable to retrieve file information for ${path}`, err)
     return null
   })
 
   if (!stats) {
+    if (dependencies.isDarwin) {
+      await dependencies
+        .revealItem(path)
+        .catch(err => log.error(`Unable to reveal folder '${path}'`, err))
+    }
     return
   }
 
   if (!stats.isDirectory()) {
     log.error(`Trying to get the folder contents of a non-folder at '${path}'`)
-    await _showItemInFolder(path)
+    await dependencies
+      .revealItem(path)
+      .catch(err => log.error(`Unable to reveal folder '${path}'`, err))
     return
   }
 
   // On Windows and Linux we can count on a directory being just a
   // directory.
-  if (!__DARWIN__) {
-    UNSAFE_openDirectory(path)
+  if (!dependencies.isDarwin) {
+    dependencies.openDirectory(path)
     return
   }
 
-  // On macOS a directory might also be an app bundle and if it is
-  // and we attempt to open it we're gonna execute that app which
-  // it far from ideal so we'll look up the metadata for the path
-  // and attempt to determine whether it's an app bundle or not.
-  //
-  // If we fail loading the metadata we'll assume it's an app bundle
-  // out of an abundance of caution.
-  const isBundle = await isApplicationBundle(path).catch(err => {
+  // Warn only when metadata identifies an application bundle. Spotlight may
+  // have no metadata for ordinary folders while indexing or on excluded volumes.
+  const isBundle = await dependencies.isApplicationBundle(path).catch(err => {
     log.error(`Failed to load metadata for path '${path}'`, err)
-    return true
+    return false
   })
 
   if (isBundle) {
     log.info(
-      `Preventing direct open of path '${path}' as it appears to be an application bundle`
+      `Preventing direct open of path '${path}' because it was identified as an application bundle`
     )
 
-    await _showItemInFolder(path)
+    await revealAfterConfirmation(path, dependencies)
   } else {
-    UNSAFE_openDirectory(path)
+    dependencies.openDirectory(path)
   }
 }
 
 export const openExternal = invokeProxy('open-external', 1)
 export const moveItemToTrash = invokeProxy('move-to-trash', 1)
+
+const writeClipboardTextProxy = invokeProxy('write-clipboard-text', 1)
+
+export async function writeClipboardText(text: string): Promise<boolean> {
+  try {
+    await writeClipboardTextProxy(text)
+    return true
+  } catch (error) {
+    log.error('Failed to write text to clipboard', error)
+    return false
+  }
+}
 
 /** Tell the main process to obtain the current window state */
 export const getCurrentWindowState = invokeProxy('get-current-window-state', 0)
@@ -155,6 +225,9 @@ export const getCurrentWindowZoomFactor = invokeProxy(
   0
 )
 
+/** Tell the main process that a modal dialog has opened */
+export const sendDialogDidOpen = sendProxy('dialog-did-open', 0)
+
 /** Tell the main process to set the current window's zoom factor */
 export const setWindowZoomFactor = sendProxy('set-window-zoom-factor', 1)
 
@@ -163,6 +236,9 @@ export const checkForUpdates = invokeProxy('check-for-updates', 1)
 
 /** Tell the main process to quit the app and install updates */
 export const quitAndInstallUpdate = sendProxy('quit-and-install-updates', 0)
+
+/** Tell the main process to quit the app */
+export const quitApp = sendProxy('quit-app', 0)
 
 /** Subscribes to auto updater error events originating from the main process */
 export function onAutoUpdaterError(
@@ -198,6 +274,12 @@ export function onAutoUpdaterUpdateDownloaded(eventHandler: () => void) {
 /** Subscribes to the native theme updated event originating from the main process */
 export function onNativeThemeUpdated(eventHandler: () => void) {
   ipcRenderer.on('native-theme-updated', eventHandler)
+}
+
+/** Subscribes to the "show installing update dialog" event originating from the
+ * main process */
+export function onShowInstallingUpdate(eventHandler: () => void) {
+  ipcRenderer.on('show-installing-update', eventHandler)
 }
 
 /** Tell the main process to set the native theme source */
@@ -271,6 +353,29 @@ export const isRunningUnderARM64Translation = invokeProxy(
 export function sendWillQuitSync() {
   // eslint-disable-next-line no-sync
   ipcRenderer.sendSync('will-quit')
+}
+
+/**
+ * Tell the main process that we're going to quit, even if the app is installing
+ * an update. This means it should allow the window to close.
+ *
+ * This event is sent synchronously to avoid any races with subsequent calls
+ * that would tell the app to quit.
+ */
+export function sendWillQuitEvenIfUpdatingSync() {
+  // eslint-disable-next-line no-sync
+  ipcRenderer.sendSync('will-quit-even-if-updating')
+}
+
+/**
+ * Tell the main process that the user cancelled quitting.
+ *
+ * This event is sent synchronously to avoid any races with subsequent calls
+ * that would tell the app to quit.
+ */
+export function sendCancelQuittingSync() {
+  // eslint-disable-next-line no-sync
+  ipcRenderer.sendSync('cancel-quitting')
 }
 
 /**
@@ -361,3 +466,7 @@ export const requestNotificationsPermission = invokeProxy(
   'request-notifications-permission',
   0
 )
+
+/** Tell the main process to (un)install the CLI on Windows */
+export const installWindowsCLI = sendProxy('install-windows-cli', 0)
+export const uninstallWindowsCLI = sendProxy('uninstall-windows-cli', 0)

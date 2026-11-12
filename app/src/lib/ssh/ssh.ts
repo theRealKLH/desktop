@@ -1,9 +1,8 @@
 import memoizeOne from 'memoize-one'
-import { pathExists } from '../../ui/lib/path-exists'
-import { enableSSHAskPass, enableWindowsOpenSSH } from '../feature-flag'
+import { pathExists } from '../path-exists'
 import { getBoolean } from '../local-storage'
 import {
-  getDesktopTrampolinePath,
+  getDesktopAskpassTrampolinePath,
   getSSHWrapperPath,
 } from '../trampoline/trampoline-environment'
 
@@ -13,7 +12,7 @@ export const UseWindowsOpenSSHKey: string = 'useWindowsOpenSSH'
 
 export const isWindowsOpenSSHAvailable = memoizeOne(
   async (): Promise<boolean> => {
-    if (!__WIN32__ || !enableWindowsOpenSSH()) {
+    if (!__WIN32__) {
       return false
     }
 
@@ -33,7 +32,7 @@ export const isWindowsOpenSSHAvailable = memoizeOne(
 function isWindowsOpenSSHUseEnabled() {
   try {
     return getBoolean(UseWindowsOpenSSHKey, false)
-  } catch (e) {
+  } catch {
     return false
   }
 }
@@ -43,13 +42,11 @@ function isWindowsOpenSSHUseEnabled() {
  * context (OS and user settings).
  */
 export async function getSSHEnvironment() {
-  const baseEnv = enableSSHAskPass()
-    ? {
-        SSH_ASKPASS: getDesktopTrampolinePath(),
-        // DISPLAY needs to be set to _something_ so ssh actually uses SSH_ASKPASS
-        DISPLAY: '.',
-      }
-    : {}
+  const baseEnv = {
+    SSH_ASKPASS: getDesktopAskpassTrampolinePath(),
+    // DISPLAY needs to be set to _something_ so ssh actually uses SSH_ASKPASS
+    DISPLAY: '.',
+  }
 
   const canUseWindowsSSH = await isWindowsOpenSSHAvailable()
   if (canUseWindowsSSH && isWindowsOpenSSHUseEnabled()) {
@@ -60,7 +57,7 @@ export async function getSSHEnvironment() {
     }
   }
 
-  if (__DARWIN__ && __DEV__ && enableSSHAskPass()) {
+  if (__DARWIN__ && __DEV__) {
     // Replace git ssh command with our wrapper in dev builds, since they are
     // launched from a command line.
     return {
@@ -74,7 +71,7 @@ export async function getSSHEnvironment() {
 
 export function parseAddSSHHostPrompt(prompt: string) {
   const promptRegex =
-    /^The authenticity of host '([^ ]+) \(([^\)]+)\)' can't be established[^.]*\.\n([^ ]+) key fingerprint is ([^.]+)\./
+    /^The authenticity of host '([^ ]+) \(([^\)]+)\)' can't be established[^.]*\.\n([^ ]+) key fingerprint is:? ([^\s.]+)\.?\r?\n/
 
   const matches = promptRegex.exec(prompt)
   if (matches === null || matches.length < 5) {

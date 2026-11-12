@@ -1,11 +1,10 @@
 import * as React from 'react'
 import { APICheckConclusion } from '../../lib/api'
 import { IRefCheck } from '../../lib/ci-checks/ci-checks'
-import { enableReRunFailedAndSingleCheckJobs } from '../../lib/feature-flag'
 import { IMenuItem, showContextualMenu } from '../../lib/menu-item'
 import { Button } from '../lib/button'
 import { Octicon, syncClockwise } from '../octicons'
-import * as OcticonSymbol from '../octicons/octicons.generated'
+import * as octicons from '../octicons/octicons.generated'
 
 interface ICICheckReRunButtonProps {
   readonly disabled: boolean
@@ -22,11 +21,7 @@ export class CICheckReRunButton extends React.PureComponent<ICICheckReRunButtonP
   }
 
   private onRerunChecks = () => {
-    if (
-      !enableReRunFailedAndSingleCheckJobs() ||
-      !this.props.canReRunFailed ||
-      !this.failedChecksExist
-    ) {
+    if (!this.props.canReRunFailed || !this.failedChecksExist) {
       this.props.onRerunChecks(false)
       return
     }
@@ -45,19 +40,31 @@ export class CICheckReRunButton extends React.PureComponent<ICICheckReRunButtonP
     showContextualMenu(items)
   }
 
+  private onRerunKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (!this.props.canReRunFailed || !this.failedChecksExist) {
+      return
+    }
+
+    if (event.key === 'ArrowDown') {
+      this.onRerunChecks()
+    }
+  }
+
   public render() {
     const text =
-      enableReRunFailedAndSingleCheckJobs() &&
-      this.props.canReRunFailed &&
-      this.failedChecksExist ? (
+      this.props.canReRunFailed && this.failedChecksExist ? (
         <>
-          Re-run <Octicon symbol={OcticonSymbol.triangleDown} />
+          Re-run <Octicon symbol={octicons.triangleDown} />
         </>
       ) : (
         'Re-run Checks'
       )
     return (
-      <Button onClick={this.onRerunChecks} disabled={this.props.disabled}>
+      <Button
+        onClick={this.onRerunChecks}
+        onKeyDown={this.onRerunKeyDown}
+        disabled={this.props.disabled}
+      >
         <Octicon symbol={syncClockwise} /> {text}
       </Button>
     )

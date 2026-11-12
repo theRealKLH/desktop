@@ -1,5 +1,7 @@
+import { IGitAccount } from '../../models/git-account'
 import { PopupType } from '../../models/popup'
 import { Dispatcher } from '../../ui/dispatcher'
+import { Repository } from '../../models/repository'
 
 type PromptSSHSecretResponse = {
   readonly secret: string | undefined
@@ -12,6 +14,17 @@ class TrampolineUIHelper {
 
   public setDispatcher(dispatcher: Dispatcher) {
     this.dispatcher = dispatcher
+  }
+
+  public promptForRepositoryAccount(repository: Repository) {
+    return this.dispatcher.ensureRepositoryAccount(repository)
+  }
+
+  public associateRepositoryWithEndpoint(
+    repository: Repository,
+    endpoint: string
+  ) {
+    return this.dispatcher.associateRepositoryWithEndpoint(repository, endpoint)
   }
 
   public promptAddingSSHHost(
@@ -54,6 +67,22 @@ class TrampolineUIHelper {
         username,
         onSubmit: (password, storePassword) =>
           resolve({ secret: password, storeSecret: storePassword }),
+      })
+    })
+  }
+
+  public promptForGenericGitAuthentication(
+    endpoint: string,
+    username?: string
+  ): Promise<IGitAccount | undefined> {
+    return new Promise(resolve => {
+      this.dispatcher.showPopup({
+        type: PopupType.GenericGitAuthentication,
+        remoteUrl: endpoint,
+        username,
+        onSubmit: (login: string, token: string) =>
+          resolve({ login, token, endpoint }),
+        onDismiss: () => resolve(undefined),
       })
     })
   }

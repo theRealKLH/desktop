@@ -14,12 +14,6 @@ interface ICICheckRunListProps {
   /** List of check runs to display */
   readonly checkRuns: ReadonlyArray<IRefCheck>
 
-  /** Whether loading action logs */
-  readonly loadingActionLogs: boolean
-
-  /** Whether loading workflow  */
-  readonly loadingActionWorkflows: boolean
-
   /** Whether check runs can be selected. Default: false */
   readonly selectable?: boolean
 
@@ -28,6 +22,9 @@ interface ICICheckRunListProps {
 
   /** Showing a condensed view */
   readonly isCondensedView?: boolean
+
+  /** Whether the check run status has a tooltip */
+  readonly hasStatusTooltip?: boolean
 
   /** Callback to opens check runs target url (maybe GitHub, maybe third party) */
   readonly onViewCheckDetails?: (checkRun: IRefCheck) => void
@@ -162,8 +159,6 @@ export class CICheckRunList extends React.PureComponent<
         <CICheckRunListItem
           checkRun={c}
           key={i}
-          loadingActionLogs={this.props.loadingActionLogs}
-          loadingActionWorkflows={this.props.loadingActionWorkflows}
           selectable={selectable}
           selected={selectable && checkRunExpanded}
           // Only expand check runs if the list is not selectable
@@ -174,6 +169,8 @@ export class CICheckRunList extends React.PureComponent<
           onViewJobStep={this.props.onViewJobStep}
           onRerunJob={this.props.onRerunJob}
           isCondensedView={this.props.isCondensedView}
+          isHeader={false}
+          hasStatusTooltip={this.props.hasStatusTooltip}
         />
       )
     })
@@ -200,7 +197,7 @@ export class CICheckRunList extends React.PureComponent<
     const groups = checkRunGroupNames.map((groupName, i) => {
       return (
         <div className="ci-check-run-list-group" key={i}>
-          <div className={groupHeaderClasses}>{groupName}</div>
+          <h2 className={groupHeaderClasses}>{groupName}</h2>
           {this.renderListItems(checkRunGroups.get(groupName))}
         </div>
       )

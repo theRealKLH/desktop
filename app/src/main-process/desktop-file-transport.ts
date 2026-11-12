@@ -5,7 +5,7 @@ import TransportStream, { TransportStreamOptions } from 'winston-transport'
 import { EOL } from 'os'
 import { readdir, unlink } from 'fs/promises'
 import { promisify } from 'util'
-import { escapeRegExp } from 'lodash'
+import escapeRegExp from 'lodash/escapeRegExp'
 
 type DesktopFileTransportOptions = TransportStreamOptions & {
   readonly logDirectory: string
@@ -48,9 +48,18 @@ export class DesktopFileTransport extends TransportStream {
     const path = getFilePath(this.logDirectory)
 
     if (this.stream === undefined || this.stream.path !== path) {
-      this.stream?.end()
-      this.stream = createWriteStream(path, { flags: 'a' })
-      this.stream.on('error', error('stream error'))
+      if (this.stream !== undefined) {
+        await promisify(this.stream.end).call(this.stream).catch(error('end'))
+        await promisify(this.stream.close)
+          .call(this.stream)
+          .catch(error('close'))
+      }
+      const stream = (this.stream = createWriteStream(path, { flags: 'a' }))
+
+      await new Promise((resolve, reject) => {
+        stream.on('open', resolve)
+        stream.on('error', reject)
+      }).catch(error('stream error'))
 
       await pruneDirectory(this.logDirectory).catch(error('prune'))
     }

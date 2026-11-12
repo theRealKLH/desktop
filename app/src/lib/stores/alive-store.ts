@@ -1,9 +1,8 @@
 import { AccountsStore } from './accounts-store'
-import { Account, accountEquals } from '../../models/account'
+import { Account, accountEquals, getAccountKey } from '../../models/account'
 import { API } from '../api'
 import { AliveSession, AliveEvent, Subscription } from '@github/alive-client'
 import { Emitter } from 'event-kit'
-import { enableHighSignalNotifications } from '../feature-flag'
 import { supportsAliveSessions } from '../endpoint-capabilities'
 
 /** Checks whether or not an account is included in a list of accounts. */
@@ -29,19 +28,29 @@ export interface IDesktopPullRequestReviewSubmitAliveEvent {
   readonly pull_request_number: number
   readonly state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED'
   readonly review_id: string
-  readonly number_of_comments: number
+}
+
+export interface IDesktopPullRequestCommentAliveEvent {
+  readonly type: 'pr-comment'
+  readonly subtype: 'review-comment' | 'issue-comment'
+  readonly timestamp: number
+  readonly owner: string
+  readonly repo: string
+  readonly pull_request_number: number
+  readonly comment_id: string
 }
 
 /** Represents an Alive event relevant to Desktop. */
 export type DesktopAliveEvent =
   | IDesktopChecksFailedAliveEvent
   | IDesktopPullRequestReviewSubmitAliveEvent
+  | IDesktopPullRequestCommentAliveEvent
 interface IAliveSubscription {
   readonly account: Account
   readonly subscription: Subscription<AliveStore>
 }
 
-interface IAliveEndpointSession {
+interface IAliveAccountSession {
   readonly session: AliveSession<AliveStore>
   readonly webSocketUrl: string
 }
@@ -53,7 +62,11 @@ interface IAliveEndpointSession {
 export class AliveStore {
   private readonly ALIVE_EVENT_RECEIVED_EVENT = 'alive-event-received'
 
-  private readonly sessionPerEndpoint: Map<string, IAliveEndpointSession> =
+  /**
+   * Sessions keyed by account, since several accounts can share an endpoint
+   * and each session is authenticated with its own account's token.
+   */
+  private readonly sessionPerAccount: Map<string, IAliveAccountSession> =
     new Map()
   private readonly emitter = new Emitter()
   private subscriptions: Array<IAliveSubscription> = []
@@ -107,7 +120,7 @@ export class AliveStore {
   }
 
   private subscribeToAccounts = async (accounts: ReadonlyArray<Account>) => {
-    if (!this.enabled || !enableHighSignalNotifications()) {
+    if (!this.enabled) {
       return
     }
 
@@ -142,13 +155,13 @@ export class AliveStore {
 
   private sessionForAccount(
     account: Account
-  ): IAliveEndpointSession | undefined {
-    return this.sessionPerEndpoint.get(account.endpoint)
+  ): IAliveAccountSession | undefined {
+    return this.sessionPerAccount.get(getAccountKey(account))
   }
 
   private async createSessionForAccount(
     account: Account
-  ): Promise<IAliveEndpointSession | null> {
+  ): Promise<IAliveAccountSession | null> {
     const session = this.sessionForAccount(account)
     if (session !== undefined) {
       return session
@@ -180,14 +193,14 @@ export class AliveStore {
       webSocketUrl,
     }
 
-    this.sessionPerEndpoint.set(account.endpoint, newSession)
+    this.sessionPerAccount.set(getAccountKey(account), newSession)
 
     return newSession
   }
 
   private unsubscribeFromAccount(account: Account) {
-    const endpointSession = this.sessionForAccount(account)
-    if (endpointSession === undefined) {
+    const accountSession = this.sessionForAccount(account)
+    if (accountSession === undefined) {
       return
     }
 
@@ -198,14 +211,14 @@ export class AliveStore {
       return
     }
 
-    endpointSession.session.unsubscribe([subscription.subscription])
+    accountSession.session.unsubscribe([subscription.subscription])
     this.subscriptions = this.subscriptions.filter(
       s => !accountEquals(s.account, account)
     )
 
-    this.sessionPerEndpoint.delete(account.endpoint)
+    this.sessionPerAccount.delete(getAccountKey(account))
 
-    endpointSession.session.offline()
+    accountSession.session.offline()
 
     log.info(`Unubscribed '${account.login}' from Alive channel`)
   }
@@ -215,11 +228,11 @@ export class AliveStore {
       return
     }
 
-    const endpointSession = await this.createSessionForAccount(account)
+    const accountSession = await this.createSessionForAccount(account)
     const api = API.fromAccount(account)
     const channelInfo = await api.getAliveDesktopChannel()
 
-    if (endpointSession === null || channelInfo === null) {
+    if (accountSession === null || channelInfo === null) {
       return
     }
 
@@ -232,7 +245,7 @@ export class AliveStore {
       },
     }
 
-    endpointSession.session.subscribe([subscription])
+    accountSession.session.subscribe([subscription])
 
     this.subscriptions.push({
       account,
@@ -248,7 +261,11 @@ export class AliveStore {
     }
 
     const data = event.data as any as DesktopAliveEvent
-    if (data.type === 'pr-checks-failed' || data.type === 'pr-review-submit') {
+    if (
+      data.type === 'pr-checks-failed' ||
+      data.type === 'pr-review-submit' ||
+      data.type === 'pr-comment'
+    ) {
       this.emitter.emit(this.ALIVE_EVENT_RECEIVED_EVENT, data)
     }
   }

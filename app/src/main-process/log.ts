@@ -1,7 +1,7 @@
 import * as winston from 'winston'
 import { getLogDirectoryPath } from '../lib/logging/get-log-path'
 import { LogLevel } from '../lib/logging/log-level'
-import { noop } from 'lodash'
+import noop from 'lodash/noop'
 import { DesktopConsoleTransport } from './desktop-console-transport'
 import memoizeOne from 'memoize-one'
 import { mkdir } from 'fs/promises'
@@ -77,7 +77,7 @@ export async function log(level: LogLevel, message: string) {
         }
       })
     })
-  } catch (error) {
+  } catch {
     /**
      * Welp. I guess we have to ignore this for now, we
      * don't have any good mechanisms for reporting this.
